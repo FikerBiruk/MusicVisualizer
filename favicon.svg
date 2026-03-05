@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Background -->
+  <rect width="100" height="100" fill="#0a0e27"/>
+
+  <!-- Animated bars representing music visualization -->
+  <rect x="15" y="50" width="8" height="35" fill="#00ff88" rx="2"/>
+  <rect x="30" y="35" width="8" height="50" fill="#00ccff" rx="2"/>
+  <rect x="45" y="25" width="8" height="60" fill="#ff00ff" rx="2"/>
+  <rect x="60" y="40" width="8" height="45" fill="#ffaa00" rx="2"/>
+  <rect x="75" y="55" width="8" height="30" fill="#ff0066" rx="2"/>
+</svg>
+
