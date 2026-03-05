@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Visualizer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🎵 Music Visualizer</h1>
+            <p class="subtitle">Real-time audio visualization with beat detection</p>
+        </header>
+
+        <!-- Controls Panel -->
+        <div class="controls">
+            <!-- Audio Input Section -->
+            <div class="control-group">
+                <label for="file-input" class="control-label">Load Audio File:</label>
+                <input type="file" id="file-input" accept="audio/*" class="file-input">
+                <button id="mic-toggle" class="btn btn-secondary">🎤 Enable Microphone</button>
+                <button id="play-pause" class="btn btn-primary" disabled>▶ Play</button>
+            </div>
+
+            <!-- Display Mode Section -->
+            <div class="control-group">
+                <label for="visual-mode" class="control-label">Visual Mode:</label>
+                <select id="visual-mode" class="select-input">
+                    <option value="spectrum">Spectrum Bars</option>
+                    <option value="radial">Radial Waveform</option>
+                    <option value="hybrid">Hybrid (Bars + Waveform)</option>
+                </select>
+                <label for="color-preset" class="control-label">Color Palette:</label>
+                <select id="color-preset" class="select-input">
+                    <option value="gradient">Rainbow Gradient</option>
+                    <option value="fire">Fire</option>
+                    <option value="ocean">Ocean</option>
+                    <option value="neon">Neon</option>
+                    <option value="mono">Monochrome</option>
+                </select>
+            </div>
+
+            <!-- FFT & Smoothing Section -->
+            <div class="control-group">
+                <div class="slider-group">
+                    <label for="fft-size" class="control-label">FFT Size: <span id="fft-value">256</span></label>
+                    <input type="range" id="fft-size" min="5" max="14" value="8" class="slider">
+                    <small>2^5=32 to 2^14=16384 bins</small>
+                </div>
+                <div class="slider-group">
+                    <label for="smoothing" class="control-label">Smoothing: <span id="smoothing-value">0.85</span></label>
+                    <input type="range" id="smoothing" min="0" max="0.99" step="0.01" value="0.85" class="slider">
+                </div>
+                <div class="slider-group">
+                    <label for="sensitivity" class="control-label">Sensitivity: <span id="sensitivity-value">1.0</span></label>
+                    <input type="range" id="sensitivity" min="0.1" max="5" step="0.1" value="1.0" class="slider">
+                </div>
+                <div class="slider-group">
+                    <label for="beat-threshold" class="control-label">Beat Threshold: <span id="beat-threshold-value">1.3</span></label>
+                    <input type="range" id="beat-threshold" min="1" max="3" step="0.1" value="1.3" class="slider">
+                </div>
+            </div>
+
+            <!-- Info Section -->
+            <div class="control-group">
+                <div class="info-box">
+                    <p><strong>Keyboard Shortcuts:</strong></p>
+                    <p>Space: Play/Pause | 1/2/3: Mode | R: Reset | Esc: Stop</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Canvas Container -->
+        <div class="canvas-container">
+            <canvas id="visualizer-canvas"></canvas>
+            <div class="debug-info">
+                <p><strong>FPS:</strong> <span id="fps">60</span> | <strong>Beat:</strong> <span id="beat-indicator">—</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script src="src/visualizer.js"></script>
+</body>
+</html>
+
