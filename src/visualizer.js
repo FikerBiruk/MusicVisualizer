@@ -117,21 +117,36 @@ class AudioManager {
     set vol(v)     { if (this.gain) this.gain.gain.value = v; }
 
     async enableMic() {
-        this.init(); this.disconnectMic();
-        if (this.audioEl) this.audioEl.pause();
-
-        // Check if getUserMedia is available (requires HTTPS or localhost)
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            throw new Error('NOT_SUPPORTED');
-        }
-
         try {
+            this.init();
+
+            // Make sure context is actually initialized
+            if (!this.ctx || !this.analyser) {
+                throw new Error('AudioContext failed to initialize');
+            }
+
+            this.disconnectMic();
+            if (this.audioEl) this.audioEl.pause();
+
+            // Check if getUserMedia is available (requires HTTPS or localhost)
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('NOT_SUPPORTED');
+            }
+
             const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // Verify createMediaStreamAudioSource exists
+            if (!this.ctx.createMediaStreamAudioSource) {
+                throw new Error('createMediaStreamAudioSource is not available');
+            }
+
             this.msSrc = this.ctx.createMediaStreamAudioSource(s);
             this.msSrc.connect(this.analyser);
             this.source = 'mic';
         } catch (err) {
-            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            if (err.message === 'NOT_SUPPORTED') {
+                throw new Error('NOT_SUPPORTED');
+            } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
                 throw new Error('DENIED');
             }
             throw new Error('MIC_ERROR: ' + err.message);
