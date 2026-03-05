@@ -128,7 +128,9 @@ body {
 /* ========== Controls Panel (glassmorphism) ========== */
 .controls-panel {
     position: fixed; top: 72px; right: 20px; z-index: 50;
-    width: 280px; padding: 20px;
+    width: 300px; padding: 20px;
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
     background: rgba(12, 12, 35, 0.75);
     backdrop-filter: blur(30px) saturate(1.5);
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -359,9 +361,62 @@ body {
     }
     .player-info { max-width: 100px; }
     .volume-group { display: none; }
-    .controls-panel { width: calc(100vw - 40px); right: 20px; }
+    .controls-panel { width: calc(100vw - 40px); right: 20px; max-height: calc(100vh - 120px); }
     .welcome-card { padding: 40px 30px; }
     .welcome-card h1 { font-size: 1.8rem; }
+}
+
+/* ========== Panel Row Layout ========== */
+.panel-row {
+    display: flex; gap: 8px;
+}
+.panel-row .mic-btn {
+    flex: 1;
+}
+
+/* ========== Status Badge (Freeze / Slow-Mo) ========== */
+.status-badge {
+    position: fixed; bottom: 84px; left: 24px; z-index: 60;
+    padding: 8px 16px; border-radius: 20px;
+    font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    backdrop-filter: blur(20px);
+    animation: badgePulse 2s ease-in-out infinite;
+    pointer-events: none;
+}
+.status-badge.frozen {
+    background: rgba(100, 180, 255, 0.15);
+    border: 1px solid rgba(100, 180, 255, 0.3);
+    color: #64b5ff;
+    box-shadow: 0 0 20px rgba(100, 180, 255, 0.2);
+}
+.status-badge.slowmo {
+    background: rgba(255, 180, 50, 0.15);
+    border: 1px solid rgba(255, 180, 50, 0.3);
+    color: #ffb432;
+    box-shadow: 0 0 20px rgba(255, 180, 50, 0.2);
+}
+@keyframes badgePulse {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 1; }
+}
+
+/* ========== Composer Sliders ========== */
+.composer-sliders {
+    margin-top: 10px;
+    padding: 10px 0;
+}
+.composer-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px;
+}
+.composer-row label {
+    font-size: 0.7rem; color: rgba(200, 210, 230, 0.5);
+    min-width: 55px; text-align: right;
+    font-weight: 500;
+}
+.composer-row .styled-range {
+    flex: 1;
 }
 
 /* ========== Scrollbar (for future use) ========== */

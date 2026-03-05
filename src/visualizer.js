@@ -1,9 +1,26 @@
 /**
- * Music Visualizer v3 — Immersive Edition
+ * Music Visualizer v4 — Ultimate Edition
  *
  * Fullscreen canvas, 5 visual modes (Spectrum, Radial, Wave, Galaxy, Hybrid),
- * starfield background, particle system, drag-and-drop, glassmorphism UI.
+ * starfield background, smart particle system, drag-and-drop, glassmorphism UI.
+ *
+ * NEW in v4:
+ * - Reactive Worlds (Nebula, Chrome, Synthwave, City)
+ * - Cinematic Camera System
+ * - Kaleidoscope & Mirror Effects
+ * - Smart Particle Behaviors (cursor orbit, beat scatter, mesh, shapes)
+ * - Dynamic Auto-Color Mode
+ * - Magic Moments System
+ * - Freeze Frame & Slow Motion
+ * - Visualizer Composer (mode blending)
  */
+
+import { WorldManager } from './worlds.js';
+import { CameraSystem } from './camera.js';
+import { PostFXPipeline } from './postfx.js';
+import { DynamicColorEngine } from './dynamicColor.js';
+import { MagicMomentsSystem } from './magicMoments.js';
+import { Composer } from './composer.js';
 
 // ============================================================================
 // COLOR PRESETS
@@ -148,10 +165,11 @@ class BeatDetector {
         this.threshold = 1.3; this.lastBeat = 0;
         this.intensity = 0;   // 0..1 decaying
         this.energy = 0;      // current bass energy
+        this.isBeat = false;  // true on the frame a beat is detected
     }
 
     update(freqData, now) {
-        if (!freqData) return false;
+        if (!freqData) { this.isBeat = false; return false; }
         // Bass energy (first 20%)
         const end = Math.max(4, Math.floor(freqData.length * 0.2));
         let sum = 0;
@@ -167,11 +185,12 @@ class BeatDetector {
 
         const beat = sAvg > lAvg * this.threshold && now - this.lastBeat > 0.16;
         if (beat) { this.lastBeat = now; this.intensity = 1; }
+        this.isBeat = beat;
         return beat;
     }
 
     decay(dt) { this.intensity = Math.max(0, this.intensity - dt * 5.5); }
-    reset() { this.history = []; this.lastBeat = 0; this.intensity = 0; }
+    reset() { this.history = []; this.lastBeat = 0; this.intensity = 0; this.isBeat = false; }
 }
 
 // ============================================================================
@@ -210,10 +229,59 @@ class Starfield {
 }
 
 // ============================================================================
-// PARTICLE SYSTEM
+// SMART PARTICLE SYSTEM — Cursor orbit, beat scatter, mesh, shape formation
 // ============================================================================
-class Particles {
-    constructor(max = 400) { this.p = []; this.max = max; }
+class SmartParticles {
+    constructor(max = 500) {
+        this.p = [];
+        this.max = max;
+        // Cursor tracking
+        this.cursorX = -1;
+        this.cursorY = -1;
+        this.cursorActive = false;
+        // Behavior flags
+        this.meshEnabled = false;
+        this.orbitEnabled = true;
+        this.shapeMode = 'none'; // 'none' | 'circle' | 'spiral' | 'heart'
+        this.meshDist = 100;
+        this.shapeTargets = [];
+    }
+
+    setCursor(x, y, active) {
+        this.cursorX = x; this.cursorY = y; this.cursorActive = active;
+    }
+
+    _generateShapeTargets(w, h, count) {
+        const targets = [];
+        const cx = w / 2, cy = h / 2;
+        const r = Math.min(w, h) * 0.25;
+        switch (this.shapeMode) {
+            case 'circle':
+                for (let i = 0; i < count; i++) {
+                    const a = (i / count) * Math.PI * 2;
+                    targets.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+                }
+                break;
+            case 'spiral':
+                for (let i = 0; i < count; i++) {
+                    const t = i / count;
+                    const a = t * Math.PI * 6;
+                    const sr = t * r;
+                    targets.push({ x: cx + Math.cos(a) * sr, y: cy + Math.sin(a) * sr });
+                }
+                break;
+            case 'heart':
+                for (let i = 0; i < count; i++) {
+                    const t = (i / count) * Math.PI * 2;
+                    const scale = r * 0.06;
+                    const hx = 16 * Math.pow(Math.sin(t), 3);
+                    const hy = -(13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+                    targets.push({ x: cx + hx * scale, y: cy + hy * scale });
+                }
+                break;
+        }
+        return targets;
+    }
 
     burst(x, y, count, palette, energy) {
         for (let i = 0; i < count && this.p.length < this.max; i++) {
@@ -225,6 +293,16 @@ class Particles {
                 size: 1.5 + Math.random() * 3.5,
                 color: palette[Math.floor(Math.random()*palette.length)],
             });
+        }
+    }
+
+    beatScatter(cx, cy, force) {
+        for (const p of this.p) {
+            const dx = p.x - cx;
+            const dy = p.y - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            p.vx += (dx / dist) * force;
+            p.vy += (dy / dist) * force;
         }
     }
 
@@ -243,9 +321,31 @@ class Particles {
         }
     }
 
-    update(dt) {
+    update(dt, w, h) {
+        if (this.shapeMode !== 'none' && this.p.length > 0) {
+            this.shapeTargets = this._generateShapeTargets(w, h, this.p.length);
+        }
         for (let i = this.p.length - 1; i >= 0; i--) {
             const p = this.p[i];
+            // Cursor orbit
+            if (this.orbitEnabled && this.cursorActive && this.cursorX > 0) {
+                const dx = this.cursorX - p.x;
+                const dy = this.cursorY - p.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 200 && dist > 5) {
+                    const force = 150 / (dist + 20);
+                    const nx = dx / dist, ny = dy / dist;
+                    p.vx += (-ny * force + nx * force * 0.3) * dt;
+                    p.vy += (nx * force + ny * force * 0.3) * dt;
+                }
+            }
+            // Shape formation
+            if (this.shapeMode !== 'none' && this.shapeTargets[i]) {
+                const target = this.shapeTargets[i];
+                p.vx += (target.x - p.x) * 2 * dt;
+                p.vy += (target.y - p.y) * 2 * dt;
+                p.vx *= 0.98; p.vy *= 0.98;
+            }
             p.x += p.vx * dt; p.y += p.vy * dt;
             p.vy += 50 * dt; p.vx *= 0.995;
             p.life -= p.decay * dt;
@@ -253,7 +353,31 @@ class Particles {
         }
     }
 
-    draw(ctx) {
+    draw(ctx, w, h) {
+        // Draw mesh connections
+        if (this.meshEnabled && this.p.length > 1) {
+            const dist2 = this.meshDist * this.meshDist;
+            const len = Math.min(this.p.length, 150);
+            for (let i = 0; i < len; i++) {
+                for (let j = i + 1; j < len; j++) {
+                    const a = this.p[i], b = this.p[j];
+                    const dx = a.x - b.x, dy = a.y - b.y;
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 < dist2) {
+                        const d = Math.sqrt(d2);
+                        const alpha = (1 - d / this.meshDist) * 0.25 * Math.min(a.life, b.life);
+                        const ca = parseColor(a.color);
+                        ctx.strokeStyle = rgba(ca, alpha);
+                        ctx.lineWidth = 0.5;
+                        ctx.beginPath();
+                        ctx.moveTo(a.x, a.y);
+                        ctx.lineTo(b.x, b.y);
+                        ctx.stroke();
+                    }
+                }
+            }
+        }
+        // Draw particles
         for (const p of this.p) {
             const c = parseColor(p.color);
             ctx.globalAlpha = Math.max(0, p.life * p.life);
@@ -278,7 +402,7 @@ class Renderer {
         this.paletteName = 'aurora';
         this.mode = 'spectrum';
         this.sensitivity = 1.8;
-        this.particles = new Particles();
+        this.particles = new SmartParticles();
         this.starfield = new Starfield();
         this.peaks = []; // peak dots per bar
         this.smoothBars = []; // smoothed bar heights
@@ -286,8 +410,30 @@ class Renderer {
         this.time = 0; // accumulated time for animations
         this.lastT = performance.now();
 
+        // New v4 systems
+        this.worldManager = new WorldManager();
+        this.camera = new CameraSystem();
+        this.postfx = new PostFXPipeline();
+        this.dynamicColor = new DynamicColorEngine();
+        this.magicMoments = new MagicMomentsSystem();
+        this.composer = new Composer();
+
+        // Freeze / slow-mo state
+        this.frozen = false;
+        this.slowMotion = false;
+        this.timeScale = 1;
+        this.frozenImageData = null;
+
         this.resize();
         window.addEventListener('resize', () => this.resize());
+
+        // Track cursor for smart particles
+        window.addEventListener('mousemove', (e) => {
+            this.particles.setCursor(e.clientX, e.clientY, true);
+        });
+        window.addEventListener('mouseleave', () => {
+            this.particles.setCursor(-1, -1, false);
+        });
     }
 
     resize() {
@@ -297,18 +443,28 @@ class Renderer {
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.w = window.innerWidth;
         this.h = window.innerHeight;
+        this.worldManager.regenerate(this.w, this.h);
     }
 
     setMode(m) { this.mode = m; }
-    setPalette(name) { this.paletteName = name; this.palette = COLOR_PRESETS[name] || COLOR_PRESETS.aurora; }
+    setPalette(name) {
+        this.paletteName = name;
+        if (name === 'auto') {
+            this.dynamicColor.enabled = true;
+        } else {
+            this.dynamicColor.enabled = false;
+            this.palette = COLOR_PRESETS[name] || COLOR_PRESETS.aurora;
+        }
+    }
 
     col(t) { return rgb(lerpColor(this.palette, t)); }
     colObj(t) { return lerpColor(this.palette, t); }
 
     // ── Spectrum Bars ──────────────────────────────────────────────────
-    drawSpectrum(freq, bi, dt) {
+    drawSpectrum(freq, bi, dt, ctx) {
         if (!freq) return;
-        const { ctx, w, h } = this;
+        ctx = ctx || this.ctx;
+        const { w, h } = this;
         const count = Math.min(128, freq.length);
         const gap = 2;
         const bw = (w - gap * count) / count;
@@ -382,9 +538,10 @@ class Renderer {
     }
 
     // ── Radial ─────────────────────────────────────────────────────────
-    drawRadial(freq, td, bi) {
+    drawRadial(freq, td, bi, ctx) {
         if (!td) return;
-        const { ctx, w, h } = this;
+        ctx = ctx || this.ctx;
+        const { w, h } = this;
         const cx = w/2, cy = h/2;
         const maxR = Math.min(w, h) * 0.35;
         const boost = 1 + bi * 0.5;
@@ -451,9 +608,10 @@ class Renderer {
     }
 
     // ── Wave (terrain waveform) ────────────────────────────────────────
-    drawWave(td, freq, bi) {
+    drawWave(td, freq, bi, ctx) {
         if (!td) return;
-        const { ctx, w, h } = this;
+        ctx = ctx || this.ctx;
+        const { w, h } = this;
         const boost = 1 + bi * 0.3;
         const midY = h * 0.5;
 
@@ -523,9 +681,10 @@ class Renderer {
     }
 
     // ── Galaxy / Starburst ─────────────────────────────────────────────
-    drawGalaxy(freq, td, bi) {
+    drawGalaxy(freq, td, bi, ctx) {
         if (!freq) return;
-        const { ctx, w, h } = this;
+        ctx = ctx || this.ctx;
+        const { w, h } = this;
         const cx = w/2, cy = h/2;
         const maxR = Math.min(w, h) * 0.42;
         const boost = 1 + bi * 0.5;
@@ -596,9 +755,10 @@ class Renderer {
     }
 
     // ── Hybrid ─────────────────────────────────────────────────────────
-    drawHybrid(freq, td, bi, dt) {
+    drawHybrid(freq, td, bi, dt, ctx) {
         if (!freq || !td) return;
-        const { ctx, w, h } = this;
+        ctx = ctx || this.ctx;
+        const { w, h } = this;
         const boost = 1 + bi * 0.4;
 
         // Bottom bars (compact)
@@ -657,70 +817,166 @@ class Renderer {
         ctx.stroke(); ctx.shadowBlur = 0;
     }
 
+    // ── Draw a mode to a given context (for composer blending) ───────
+    drawModeToCtx(ctx, modeName, freq, td, bi, dt) {
+        switch (modeName) {
+            case 'spectrum': this.drawSpectrum(freq, bi, dt, ctx); break;
+            case 'radial':   this.drawRadial(freq, td, bi, ctx); break;
+            case 'wave':     this.drawWave(td, freq, bi, ctx); break;
+            case 'galaxy':   this.drawGalaxy(freq, td, bi, ctx); break;
+            case 'hybrid':   this.drawHybrid(freq, td, bi, dt, ctx); break;
+        }
+    }
+
     // ── Main Render ────────────────────────────────────────────────────
     render(freq, td, beat) {
         const now = performance.now();
-        const dt = Math.min(0.05, (now - this.lastT) / 1000);
+        const rawDt = Math.min(0.05, (now - this.lastT) / 1000);
         this.lastT = now;
-        this.time += dt;
-        const { ctx, w, h } = this;
-        const bi = beat.intensity;
 
-        // Compute bass energy
+        // Freeze frame: redraw frozen image
+        if (this.frozen) {
+            if (this.frozenImageData) {
+                this.ctx.putImageData(this.frozenImageData, 0, 0);
+            }
+            return;
+        }
+
+        // Apply time scale (slow motion)
+        const dt = rawDt * this.timeScale;
+        this.time += dt;
+        const { w, h } = this;
+        const bi = beat.intensity;
+        const isBeat = beat.isBeat;
+
+        // Compute bass & overall energy
         let bass = 0;
+        let overallEnergy = 0;
         if (freq) {
             const end = Math.max(4, Math.floor(freq.length * 0.12));
             let s = 0; for (let i = 0; i < end; i++) s += freq[i] / 255;
             bass = s / end;
+            let totalS = 0;
+            for (let i = 0; i < freq.length; i++) totalS += freq[i] / 255;
+            overallEnergy = totalS / freq.length;
+        }
+
+        // Dynamic color update
+        if (this.dynamicColor.enabled) {
+            const dynPalette = this.dynamicColor.update(freq, bi, bass, overallEnergy, dt);
+            if (dynPalette) this.palette = dynPalette;
+        }
+
+        // Camera update
+        this.camera.update(dt, this.mode, bi, bass, isBeat);
+
+        // Magic moments update
+        this.magicMoments.update(overallEnergy, bi, bass, isBeat, dt, now / 1000);
+
+        // Determine render target (offscreen for post-fx, or direct canvas)
+        let renderCtx = this.ctx;
+        const postfxActive = this.postfx.isActive();
+        if (postfxActive) {
+            const offCtx = this.postfx.beginCapture(this.canvas);
+            if (offCtx) renderCtx = offCtx;
         }
 
         // Clear
-        ctx.clearRect(0, 0, w, h);
+        renderCtx.clearRect(0, 0, w, h);
 
-        // Dynamic background gradient that breathes with music
+        // Dynamic background gradient
         const bg1 = Math.floor(5 + bi * 15 + bass * 8);
         const bg2 = Math.floor(5 + bi * 10 + bass * 5);
         const bg3 = Math.floor(12 + bi * 30 + bass * 15);
-        const bgGrad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w, h) * 0.7);
+        const bgGrad = renderCtx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w, h) * 0.7);
         bgGrad.addColorStop(0, `rgb(${bg1},${bg2},${bg3})`);
         bgGrad.addColorStop(1, `rgb(${Math.floor(bg1*0.3)},${Math.floor(bg2*0.3)},${Math.floor(bg3*0.4)})`);
-        ctx.fillStyle = bgGrad;
-        ctx.fillRect(0, 0, w, h);
+        renderCtx.fillStyle = bgGrad;
+        renderCtx.fillRect(0, 0, w, h);
 
         // Beat flash
         if (bi > 0.05) {
-            ctx.fillStyle = `rgba(255,255,255,${bi * 0.06})`;
-            ctx.fillRect(0, 0, w, h);
+            renderCtx.fillStyle = `rgba(255,255,255,${bi * 0.06})`;
+            renderCtx.fillRect(0, 0, w, h);
         }
+
+        // Reactive Worlds (drawn behind visualization)
+        const audioState = {
+            bass, energy: overallEnergy, beatIntensity: bi,
+            palette: this.palette, dt, freqData: freq, timeData: td
+        };
+        this.worldManager.draw(renderCtx, w, h, audioState);
 
         // Starfield
-        this.starfield.draw(ctx, w, h, bass, bi);
+        this.starfield.draw(renderCtx, w, h, bass, bi);
 
-        // Visualization
-        switch (this.mode) {
-            case 'spectrum': this.drawSpectrum(freq, bi, dt); break;
-            case 'radial':   this.drawRadial(freq, td, bi); break;
-            case 'wave':     this.drawWave(td, freq, bi); break;
-            case 'galaxy':   this.drawGalaxy(freq, td, bi); break;
-            case 'hybrid':   this.drawHybrid(freq, td, bi, dt); break;
+        // Apply camera transforms
+        this.camera.apply(renderCtx, w, h);
+
+        // Visualization (composer blending or single mode)
+        const composerRendered = this.composer.enabled && this.composer.render(
+            renderCtx, w, h,
+            (ctx, mode) => this.drawModeToCtx(ctx, mode, freq, td, bi, dt)
+        );
+
+        if (!composerRendered) {
+            switch (this.mode) {
+                case 'spectrum': this.drawSpectrum(freq, bi, dt, renderCtx); break;
+                case 'radial':   this.drawRadial(freq, td, bi, renderCtx); break;
+                case 'wave':     this.drawWave(td, freq, bi, renderCtx); break;
+                case 'galaxy':   this.drawGalaxy(freq, td, bi, renderCtx); break;
+                case 'hybrid':   this.drawHybrid(freq, td, bi, dt, renderCtx); break;
+            }
         }
+
+        // Restore camera transforms
+        this.camera.restore(renderCtx);
 
         // Particles
-        if (bi > 0.85) {
-            const bx = this.mode === 'radial' || this.mode === 'galaxy' ? w/2 : w/2;
-            const by = this.mode === 'radial' || this.mode === 'galaxy' ? h/2 : h * 0.75;
+        if (isBeat && bi > 0.85) {
+            const bx = w / 2;
+            const by = (this.mode === 'radial' || this.mode === 'galaxy') ? h / 2 : h * 0.75;
             this.particles.burst(bx, by, 12 + Math.floor(bass * 25), this.palette, bass + bi);
+            this.particles.beatScatter(w / 2, h / 2, 200 * bi);
         }
         this.particles.ambient(w, h, bass, this.palette);
-        this.particles.update(dt);
-        this.particles.draw(ctx);
+        this.particles.update(dt, w, h);
+        this.particles.draw(renderCtx, w, h);
+
+        // Magic moments overlay
+        this.magicMoments.draw(renderCtx, w, h);
+
+        // Camera DOF effect
+        this.camera.applyDOF(renderCtx, w, h);
 
         // Vignette
-        const vg = ctx.createRadialGradient(w/2, h/2, w * 0.25, w/2, h/2, w * 0.75);
+        const vg = renderCtx.createRadialGradient(w/2, h/2, w * 0.25, w/2, h/2, w * 0.75);
         vg.addColorStop(0, 'transparent');
         vg.addColorStop(1, 'rgba(0,0,0,0.4)');
-        ctx.fillStyle = vg;
-        ctx.fillRect(0, 0, w, h);
+        renderCtx.fillStyle = vg;
+        renderCtx.fillRect(0, 0, w, h);
+
+        // Apply post-fx (kaleidoscope/mirror)
+        if (postfxActive) {
+            this.postfx.endCapture(this.ctx, w, h);
+        }
+    }
+
+    /** Capture current frame for freeze. */
+    freezeFrame() {
+        this.frozen = true;
+        const dpr = window.devicePixelRatio || 1;
+        this.frozenImageData = this.ctx.getImageData(0, 0, this.w * dpr, this.h * dpr);
+    }
+
+    unfreezeFrame() {
+        this.frozen = false;
+        this.frozenImageData = null;
+    }
+
+    toggleSlowMotion() {
+        this.slowMotion = !this.slowMotion;
+        this.timeScale = this.slowMotion ? 0.25 : 1;
     }
 }
 
@@ -756,6 +1012,7 @@ class App {
             sensitivity:  document.getElementById('sensitivity'),
             beatThreshold:document.getElementById('beat-threshold'),
             micToggle:    document.getElementById('mic-toggle'),
+            statusBadge:  document.getElementById('status-badge'),
         };
 
         this.bind();
@@ -785,7 +1042,7 @@ class App {
         // Mode pills
         document.querySelectorAll('.pill[data-mode]').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.pill[data-mode]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.renderer.setMode(btn.dataset.mode);
             });
@@ -797,6 +1054,70 @@ class App {
                 document.querySelectorAll('.swatch').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.renderer.setPalette(btn.dataset.palette);
+            });
+        });
+
+        // World pills
+        document.querySelectorAll('.pill[data-world]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.pill[data-world]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const world = btn.dataset.world;
+                this.renderer.worldManager.setWorld(world === 'none' ? null : world);
+            });
+        });
+
+        // Effect pills (kaleidoscope/mirror)
+        document.querySelectorAll('.pill[data-effect]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.pill[data-effect]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.renderer.postfx.setEffect(btn.dataset.effect);
+            });
+        });
+
+        // Particle behavior pills
+        document.querySelectorAll('.pill[data-particle]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.pill[data-particle]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const mode = btn.dataset.particle;
+                const p = this.renderer.particles;
+                p.meshEnabled = false;
+                p.shapeMode = 'none';
+                p.orbitEnabled = true;
+                switch (mode) {
+                    case 'orbit': p.orbitEnabled = true; break;
+                    case 'mesh': p.meshEnabled = true; break;
+                    case 'circle': p.shapeMode = 'circle'; break;
+                    case 'spiral': p.shapeMode = 'spiral'; break;
+                    case 'heart': p.shapeMode = 'heart'; break;
+                }
+            });
+        });
+
+        // Camera toggle
+        const camToggle = document.getElementById('camera-toggle');
+        if (camToggle) {
+            camToggle.addEventListener('click', () => {
+                this.renderer.camera.enabled = !this.renderer.camera.enabled;
+                camToggle.classList.toggle('active', this.renderer.camera.enabled);
+            });
+        }
+
+        // Composer toggle and sliders
+        const composerToggle = document.getElementById('composer-toggle');
+        if (composerToggle) {
+            composerToggle.addEventListener('click', () => {
+                this.renderer.composer.enabled = !this.renderer.composer.enabled;
+                composerToggle.classList.toggle('active', this.renderer.composer.enabled);
+                const composerSliders = document.getElementById('composer-sliders');
+                if (composerSliders) composerSliders.classList.toggle('hidden', !this.renderer.composer.enabled);
+            });
+        }
+        document.querySelectorAll('.composer-weight').forEach(slider => {
+            slider.addEventListener('input', () => {
+                this.renderer.composer.setWeight(slider.dataset.mode, parseFloat(slider.value));
             });
         });
 
@@ -863,6 +1184,7 @@ class App {
         await ae.play().catch(() => {});
         this.updatePlayBtn();
         this.beat.reset();
+        this.renderer.magicMoments.reset();
     }
 
     async togglePlay() {
@@ -907,7 +1229,7 @@ class App {
                 const i = parseInt(e.code.slice(-1)) - 1;
                 if (modes[i]) {
                     this.renderer.setMode(modes[i]);
-                    document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll('.pill[data-mode]').forEach(b => b.classList.remove('active'));
                     document.querySelector(`.pill[data-mode="${modes[i]}"]`)?.classList.add('active');
                 }
                 break;
@@ -915,10 +1237,37 @@ class App {
             case 'ArrowLeft':  if (this.audio.audioEl) this.audio.time = Math.max(0, this.audio.time - 5); break;
             case 'ArrowRight': if (this.audio.audioEl) this.audio.time = Math.min(this.audio.duration, this.audio.time + 5); break;
             case 'KeyF': this.toggleFullscreen(); break;
+            case 'KeyS':
+                if (e.shiftKey) {
+                    this.renderer.toggleSlowMotion();
+                    this._updateStatusBadge();
+                } else {
+                    if (this.renderer.frozen) this.renderer.unfreezeFrame();
+                    else this.renderer.freezeFrame();
+                    this._updateStatusBadge();
+                }
+                break;
             case 'Escape':
                 if (document.fullscreenElement) document.exitFullscreen();
                 else { this.audio.stop(); this.el.micToggle.classList.remove('active'); this.updatePlayBtn(); }
                 break;
+        }
+    }
+
+    _updateStatusBadge() {
+        const badge = this.el.statusBadge;
+        if (!badge) return;
+        if (this.renderer.frozen) {
+            badge.textContent = '⏸ FROZEN';
+            badge.classList.remove('hidden', 'slowmo');
+            badge.classList.add('frozen');
+        } else if (this.renderer.slowMotion) {
+            badge.textContent = '🐢 SLOW-MO';
+            badge.classList.remove('hidden', 'frozen');
+            badge.classList.add('slowmo');
+        } else {
+            badge.classList.add('hidden');
+            badge.classList.remove('frozen', 'slowmo');
         }
     }
 
@@ -969,7 +1318,7 @@ class App {
     };
 
     start() {
-        console.log('Music Visualizer v3 — Immersive Edition');
+        console.log('Music Visualizer v4 — Ultimate Edition');
         this.loop();
     }
 }
