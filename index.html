@@ -124,6 +124,41 @@
             <input type="range" id="sensitivity" min="0.5" max="4" step="0.1" value="1.8" class="styled-range">
         </div>
         <div class="panel-section">
+            <div class="panel-label">Bar Count</div>
+            <input type="range" id="bar-count" min="32" max="256" step="16" value="128" class="styled-range">
+            <div class="slider-value"><span id="bar-count-value">128</span> bars</div>
+        </div>
+        <div class="panel-section">
+            <div class="panel-label">Frequency Sensitivity</div>
+            <div class="freq-preset-group">
+                <label for="freq-preset" class="freq-preset-label">Preset:</label>
+                <select id="freq-preset" class="freq-preset-dropdown">
+                    <option value="balanced">Balanced</option>
+                    <option value="bass-heavy">Bass Heavy</option>
+                    <option value="treble-boost">Treble Boost</option>
+                    <option value="vocal">Vocal Enhance</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+            <div class="freq-sliders">
+                <div class="freq-slider-row">
+                    <label>Bass (0-20%)</label>
+                    <input type="range" id="freq-bass" min="0.5" max="2.5" step="0.1" value="1.6" class="styled-range freq-slider">
+                    <span class="freq-value"><span id="freq-bass-value">1.6</span>x</span>
+                </div>
+                <div class="freq-slider-row">
+                    <label>Mids (20-50%)</label>
+                    <input type="range" id="freq-mids" min="0.5" max="2.5" step="0.1" value="1.0" class="styled-range freq-slider">
+                    <span class="freq-value"><span id="freq-mids-value">1.0</span>x</span>
+                </div>
+                <div class="freq-slider-row">
+                    <label>Highs (50-100%)</label>
+                    <input type="range" id="freq-highs" min="0.1" max="1.0" step="0.05" value="0.35" class="styled-range freq-slider">
+                    <span class="freq-value"><span id="freq-highs-value">0.35</span>x</span>
+                </div>
+            </div>
+        </div>
+        <div class="panel-section">
             <div class="panel-label">Beat Sensitivity</div>
             <input type="range" id="beat-threshold" min="1" max="3" step="0.1" value="1.3" class="styled-range">
         </div>

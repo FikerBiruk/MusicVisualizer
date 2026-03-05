@@ -35,6 +35,37 @@ const COLOR_PRESETS = {
     mono:     ['#222222','#555555','#888888','#bbbbbb','#eeeeee','#ffffff'],
 };
 
+// ============================================================================
+// FREQUENCY PRESETS
+// ============================================================================
+const FREQUENCY_PRESETS = {
+    balanced: {
+        bass: 1.6,
+        mids: 1.0,
+        highs: 0.35,
+    },
+    'bass-heavy': {
+        bass: 2.2,
+        mids: 0.9,
+        highs: 0.2,
+    },
+    'treble-boost': {
+        bass: 1.2,
+        mids: 1.3,
+        highs: 0.8,
+    },
+    vocal: {
+        bass: 1.2,
+        mids: 2.0,
+        highs: 0.6,
+    },
+    custom: {
+        bass: 1.6,
+        mids: 1.0,
+        highs: 0.35,
+    },
+};
+
 const VISUAL_MODES = ['spectrum','radial','wave','galaxy','hybrid'];
 
 // ============================================================================
@@ -417,6 +448,13 @@ class Renderer {
         this.paletteName = 'aurora';
         this.mode = 'spectrum';
         this.sensitivity = 1.8;
+
+        // Bar count and frequency sensitivity controls
+        this.barCount = 128;
+        this.freqBass = 1.6;    // 0-20%
+        this.freqMids = 1.0;    // 20-50%
+        this.freqHighs = 0.35;  // 50-100%
+
         this.particles = new SmartParticles();
         this.starfield = new Starfield();
         this.peaks = []; // peak dots per bar
@@ -480,7 +518,7 @@ class Renderer {
         if (!freq) return;
         ctx = ctx || this.ctx;
         const { w, h } = this;
-        const count = Math.min(128, freq.length);
+        const count = Math.min(this.barCount, freq.length);
         const gap = 2;
         const bw = (w - gap * count) / count;
         const baseY = h * 0.78;
@@ -492,7 +530,17 @@ class Renderer {
 
         for (let i = 0; i < count; i++) {
             const raw = freq[i] / 255;
-            const wt = i < count*0.2 ? 1.5 : i < count*0.5 ? 1.15 : 0.85;
+            // Apply user-configured frequency weighting
+            let wt;
+            if (i < count * 0.2) {
+                wt = this.freqBass; // Bass (0-20%)
+            } else if (i < count * 0.5) {
+                wt = this.freqMids; // Mids (20-50%)
+            } else {
+                // Highs (50-100%): fade from freqHighs to freqHighs * 0.5
+                const highProgress = (i - count * 0.5) / (count * 0.5);
+                wt = this.freqHighs * (1 - highProgress * 0.4); // Fade effect
+            }
             const target = Math.pow(raw * wt, 1.5) * this.sensitivity * boost;
             // Smooth bars for fluid motion
             this.smoothBars[i] += (target - this.smoothBars[i]) * Math.min(1, dt * 18);
@@ -571,11 +619,21 @@ class Renderer {
 
         // Frequency ring bars
         if (freq) {
-            const bars = Math.min(96, freq.length);
+            const bars = Math.min(this.barCount, freq.length);
             const barW = (Math.PI * 2) / bars;
             for (let i = 0; i < bars; i++) {
                 const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
-                const val = Math.pow(freq[i] / 255, 1.6) * this.sensitivity * boost;
+                // Apply frequency weighting: reduce high frequencies
+                let wt;
+                if (i < bars * 0.2) {
+                    wt = this.freqBass;
+                } else if (i < bars * 0.5) {
+                    wt = this.freqMids;
+                } else {
+                    const highProgress = (i - bars * 0.5) / (bars * 0.5);
+                    wt = this.freqHighs * (1 - highProgress * 0.4);
+                }
+                const val = Math.pow(freq[i] / 255 * wt, 1.6) * this.sensitivity * boost;
                 const innerR = maxR * 0.42;
                 const outerR = innerR + val * maxR * 0.55;
                 const c = this.colObj(i / bars);
@@ -777,13 +835,22 @@ class Renderer {
         const boost = 1 + bi * 0.4;
 
         // Bottom bars (compact)
-        const count = Math.min(80, freq.length);
+        const count = Math.min(Math.floor(this.barCount * 0.6), freq.length);
         const gap = 1.5;
         const bw = (w - gap * count) / count;
         const baseY = h * 0.88;
         for (let i = 0; i < count; i++) {
             const raw = freq[i] / 255;
-            const wt = i < count*0.2 ? 1.4 : 1.0;
+            // Apply frequency weighting
+            let wt;
+            if (i < count * 0.2) {
+                wt = 1.6;
+            } else if (i < count * 0.5) {
+                wt = 1.0;
+            } else {
+                const highProgress = (i - count * 0.5) / (count * 0.5);
+                wt = 0.5 - highProgress * 0.3;
+            }
             const val = Math.pow(raw * wt, 1.5) * this.sensitivity * 0.5 * boost;
             const bh = Math.min(val * h * 0.35, h * 0.35);
             const x = i * (bw + gap);
@@ -801,7 +868,17 @@ class Renderer {
         const ringBars = Math.min(64, freq.length);
         for (let i = 0; i < ringBars; i++) {
             const angle = (i / ringBars) * Math.PI * 2 - Math.PI/2;
-            const val = Math.pow(freq[i] / 255, 1.5) * this.sensitivity * 0.8 * boost;
+            // Apply frequency weighting
+            let wt;
+            if (i < ringBars * 0.2) {
+                wt = 1.6;
+            } else if (i < ringBars * 0.5) {
+                wt = 1.0;
+            } else {
+                const highProgress = (i - ringBars * 0.5) / (ringBars * 0.5);
+                wt = 0.5 - highProgress * 0.3;
+            }
+            const val = Math.pow(freq[i] / 255 * wt, 1.5) * this.sensitivity * 0.8 * boost;
             const iR = maxR * 0.5;
             const oR = iR + val * maxR * 0.5;
             const c = this.colObj(i / ringBars);
@@ -1004,6 +1081,7 @@ class App {
         this.beat = new BeatDetector();
         this.renderer = new Renderer(document.getElementById('visualizer-canvas'));
         this.trackName = '';
+        this._freqPresetMode = 'balanced';
 
         this.el = {
             canvas:       document.getElementById('visualizer-canvas'),
@@ -1025,6 +1103,15 @@ class App {
             volIcon:      document.getElementById('player-volume-icon'),
             volRange:     document.getElementById('player-volume'),
             sensitivity:  document.getElementById('sensitivity'),
+            barCount:     document.getElementById('bar-count'),
+            barCountValue:document.getElementById('bar-count-value'),
+            freqPreset:   document.getElementById('freq-preset'),
+            freqBass:     document.getElementById('freq-bass'),
+            freqBassValue:document.getElementById('freq-bass-value'),
+            freqMids:     document.getElementById('freq-mids'),
+            freqMidsValue:document.getElementById('freq-mids-value'),
+            freqHighs:    document.getElementById('freq-highs'),
+            freqHighsValue:document.getElementById('freq-highs-value'),
             beatThreshold:document.getElementById('beat-threshold'),
             micToggle:    document.getElementById('mic-toggle'),
             statusBadge:  document.getElementById('status-badge'),
@@ -1143,6 +1230,81 @@ class App {
         this.el.beatThreshold.addEventListener('input', e => {
             this.beat.threshold = Math.max(1, Math.min(3, parseFloat(e.target.value)));
         });
+
+        // Bar count slider
+        if (this.el.barCount) {
+            this.el.barCount.addEventListener('input', e => {
+                const val = parseInt(e.target.value);
+                this.renderer.barCount = val;
+                if (this.el.barCountValue) this.el.barCountValue.textContent = val;
+            });
+        }
+
+        // Frequency preset dropdown
+        if (this.el.freqPreset) {
+            this.el.freqPreset.addEventListener('change', e => {
+                const preset = e.target.value;
+                if (FREQUENCY_PRESETS[preset]) {
+                    const p = FREQUENCY_PRESETS[preset];
+                    this.renderer.freqBass = p.bass;
+                    this.renderer.freqMids = p.mids;
+                    this.renderer.freqHighs = p.highs;
+
+                    // Update sliders and display values
+                    if (this.el.freqBass) this.el.freqBass.value = p.bass;
+                    if (this.el.freqBassValue) this.el.freqBassValue.textContent = p.bass.toFixed(1);
+                    if (this.el.freqMids) this.el.freqMids.value = p.mids;
+                    if (this.el.freqMidsValue) this.el.freqMidsValue.textContent = p.mids.toFixed(1);
+                    if (this.el.freqHighs) this.el.freqHighs.value = p.highs;
+                    if (this.el.freqHighsValue) this.el.freqHighsValue.textContent = p.highs.toFixed(1);
+
+                    // Mark preset as "custom" if user manually adjusts sliders later
+                    this._freqPresetMode = preset;
+                }
+            });
+        }
+
+        // Frequency bass slider
+        if (this.el.freqBass) {
+            this.el.freqBass.addEventListener('input', e => {
+                const val = parseFloat(e.target.value);
+                this.renderer.freqBass = val;
+                if (this.el.freqBassValue) this.el.freqBassValue.textContent = val.toFixed(1);
+                // Auto-switch to custom preset when slider is adjusted
+                if (this.el.freqPreset && this._freqPresetMode !== 'custom') {
+                    this.el.freqPreset.value = 'custom';
+                    this._freqPresetMode = 'custom';
+                }
+            });
+        }
+
+        // Frequency mids slider
+        if (this.el.freqMids) {
+            this.el.freqMids.addEventListener('input', e => {
+                const val = parseFloat(e.target.value);
+                this.renderer.freqMids = val;
+                if (this.el.freqMidsValue) this.el.freqMidsValue.textContent = val.toFixed(1);
+                // Auto-switch to custom preset when slider is adjusted
+                if (this.el.freqPreset && this._freqPresetMode !== 'custom') {
+                    this.el.freqPreset.value = 'custom';
+                    this._freqPresetMode = 'custom';
+                }
+            });
+        }
+
+        // Frequency highs slider
+        if (this.el.freqHighs) {
+            this.el.freqHighs.addEventListener('input', e => {
+                const val = parseFloat(e.target.value);
+                this.renderer.freqHighs = val;
+                if (this.el.freqHighsValue) this.el.freqHighsValue.textContent = val.toFixed(1);
+                // Auto-switch to custom preset when slider is adjusted
+                if (this.el.freqPreset && this._freqPresetMode !== 'custom') {
+                    this.el.freqPreset.value = 'custom';
+                    this._freqPresetMode = 'custom';
+                }
+            });
+        }
 
         // Player
         this.el.playPause.addEventListener('click', () => this.togglePlay());
