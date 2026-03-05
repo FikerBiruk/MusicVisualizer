@@ -1,879 +1,984 @@
 /**
- * Music Visualizer - Main Module
+ * Music Visualizer v3 — Immersive Edition
  *
- * A real-time audio visualization engine with beat detection,
- * multiple visual modes, and configurable audio parameters.
- *
- * Architecture:
- * - AudioManager: Web Audio API setup and data extraction
- * - BeatDetector: Energy-based beat detection algorithm
- * - Renderer: Canvas 2D rendering with multiple visual modes
- * - App: Main orchestrator and UI bindings
+ * Fullscreen canvas, 5 visual modes (Spectrum, Radial, Wave, Galaxy, Hybrid),
+ * starfield background, particle system, drag-and-drop, glassmorphism UI.
  */
 
 // ============================================================================
-// CONFIGURATION & PRESETS
+// COLOR PRESETS
 // ============================================================================
-
-/**
- * Color palette presets for different visual themes.
- * Each palette is an array of CSS colors interpolated based on frequency.
- */
 const COLOR_PRESETS = {
-    gradient: [
-        '#ff0000', '#ff7f00', '#ffff00', '#00ff00',
-        '#0000ff', '#4b0082', '#9400d3'
-    ],
-    fire: [
-        '#000000', '#330000', '#660000', '#990000',
-        '#cc0000', '#ff3300', '#ff6600', '#ffcc00'
-    ],
-    ocean: [
-        '#001a33', '#003366', '#0066cc', '#00ccff',
-        '#00ffff', '#66ffff', '#ccffff'
-    ],
-    neon: [
-        '#ff006e', '#fb5607', '#ffbe0b', '#8338ec',
-        '#3a86ff', '#06ffa5', '#ff006e'
-    ],
-    mono: [
-        '#000000', '#333333', '#666666', '#999999',
-        '#cccccc', '#ffffff'
-    ]
+    gradient: ['#ff0000','#ff7f00','#ffff00','#00ff00','#0000ff','#4b0082','#9400d3'],
+    fire:     ['#1a0000','#660000','#cc2200','#ff4400','#ff8800','#ffcc00','#ffffaa'],
+    ocean:    ['#000d1a','#003366','#0066cc','#00aaff','#00ffff','#66ffff','#ccffff'],
+    neon:     ['#ff006e','#fb5607','#ffbe0b','#8338ec','#3a86ff','#06ffa5','#ff006e'],
+    aurora:   ['#00ff87','#60efff','#b967ff','#ff6ec7','#00ff87'],
+    sunset:   ['#f72585','#b5179e','#7209b7','#560bad','#480ca8','#3a0ca3','#3f37c9','#4361ee','#4cc9f0'],
+    mono:     ['#222222','#555555','#888888','#bbbbbb','#eeeeee','#ffffff'],
 };
 
-/**
- * Visual mode configurations.
- */
-const VISUAL_MODES = {
-    spectrum: 'spectrum',
-    radial: 'radial',
-    hybrid: 'hybrid'
-};
+const VISUAL_MODES = ['spectrum','radial','wave','galaxy','hybrid'];
+
+// ============================================================================
+// COLOR CACHE
+// ============================================================================
+const _cc = new Map();
+function parseColor(s) {
+    if (_cc.has(s)) return _cc.get(s);
+    const c = document.createElement('canvas'); c.width = c.height = 1;
+    const x = c.getContext('2d'); x.fillStyle = s; x.fillRect(0,0,1,1);
+    const d = x.getImageData(0,0,1,1).data;
+    const o = { r: d[0], g: d[1], b: d[2] };
+    _cc.set(s, o); return o;
+}
+
+function lerpColor(palette, t) {
+    const v = Math.max(0, Math.min(1, t));
+    const idx = v * (palette.length - 1);
+    const lo = Math.floor(idx), hi = Math.min(lo + 1, palette.length - 1);
+    const f = idx - lo;
+    const a = parseColor(palette[lo]), b = parseColor(palette[hi]);
+    return {
+        r: Math.round(a.r + (b.r - a.r) * f),
+        g: Math.round(a.g + (b.g - a.g) * f),
+        b: Math.round(a.b + (b.b - a.b) * f),
+    };
+}
+
+function rgb(c) { return `rgb(${c.r},${c.g},${c.b})`; }
+function rgba(c, a) { return `rgba(${c.r},${c.g},${c.b},${a})`; }
 
 // ============================================================================
 // AUDIO MANAGER
 // ============================================================================
-
-/**
- * Manages Web Audio API context, nodes, and data extraction.
- * Supports both file input and microphone input.
- */
 class AudioManager {
     constructor() {
-        // Initialize lazy: context created on first user interaction
-        this.audioContext = null;
-        this.analyser = null;
-        this.frequencyData = null;
-        this.timeDomainData = null;
-        this.audioSource = null;
-        this.mediaElementAudioSource = null;
-        this.mediaStreamAudioSource = null;
-        this.currentSource = null; // 'file', 'mic', or null
+        this.ctx = null; this.analyser = null;
+        this.freqData = null; this.timeData = null;
+        this.audioEl = null; this.meSrc = null;
+        this.msSrc = null; this.gain = null;
+        this.source = null; // 'file' | 'mic' | null
     }
 
-    /**
-     * Initialize AudioContext and analyser node.
-     * Must be called in response to user gesture (security requirement).
-     */
-    initializeContext() {
-        if (this.audioContext) return;
-
-        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        this.analyser = this.audioContext.createAnalyser();
-        this.analyser.connect(this.audioContext.destination);
-
-        // Configure analyser with sensible defaults
-        this.setFftSize(256);
-        this.analyser.smoothingTimeConstant = 0.85;
-        this.analyser.minDecibels = -100;
+    init() {
+        if (this.ctx) return;
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.analyser = this.ctx.createAnalyser();
+        this.gain = this.ctx.createGain();
+        this.gain.connect(this.ctx.destination);
+        this.analyser.connect(this.gain);
+        this.analyser.fftSize = 1024;
+        this.analyser.smoothingTimeConstant = 0.5;
+        this.analyser.minDecibels = -85;
         this.analyser.maxDecibels = -10;
+        this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
+        this.timeData = new Uint8Array(this.analyser.fftSize);
     }
 
-    /**
-     * Load and play an audio file.
-     * @param {File} file - Audio file from input element
-     */
-    async loadAudioFile(file) {
-        if (!this.audioContext) this.initializeContext();
+    loadFile(file) {
+        this.init(); this.disconnectMic();
+        if (!this.audioEl) {
+            this.audioEl = new Audio();
+            this.audioEl.crossOrigin = 'anonymous';
+            this.meSrc = this.ctx.createMediaElementSource(this.audioEl);
+            this.meSrc.connect(this.analyser);
+        }
+        if (this.audioEl._url) URL.revokeObjectURL(this.audioEl._url);
+        const u = URL.createObjectURL(file);
+        this.audioEl._url = u; this.audioEl.src = u;
+        this.source = 'file';
+    }
 
-        // Disconnect existing sources
-        this.disconnectAllSources();
+    play()  { if (this.audioEl) return this.audioEl.play(); }
+    pause() { if (this.audioEl) this.audioEl.pause(); }
+    get paused()   { return this.audioEl ? this.audioEl.paused : true; }
+    get time()     { return this.audioEl ? this.audioEl.currentTime : 0; }
+    set time(v)    { if (this.audioEl) this.audioEl.currentTime = v; }
+    get duration() { return this.audioEl ? (this.audioEl.duration || 0) : 0; }
+    get vol()      { return this.gain ? this.gain.gain.value : 1; }
+    set vol(v)     { if (this.gain) this.gain.gain.value = v; }
+
+    async enableMic() {
+        this.init(); this.disconnectMic();
+        if (this.audioEl) this.audioEl.pause();
+
+        // Check if getUserMedia is available (requires HTTPS or localhost)
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('NOT_SUPPORTED');
+        }
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
-
-            // Create audio source from buffer
-            const source = this.audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(this.analyser);
-
-            this.audioSource = source;
-            this.currentSource = 'file';
-
-            return source;
-        } catch (error) {
-            console.error('Error loading audio file:', error);
-            throw error;
+            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.msSrc = this.ctx.createMediaStreamAudioSource(s);
+            this.msSrc.connect(this.analyser);
+            this.source = 'mic';
+        } catch (err) {
+            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                throw new Error('DENIED');
+            }
+            throw new Error('MIC_ERROR: ' + err.message);
         }
     }
 
-    /**
-     * Enable microphone input via getUserMedia.
-     */
-    async enableMicrophone() {
-        if (!this.audioContext) this.initializeContext();
-
-        this.disconnectAllSources();
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const source = this.audioContext.createMediaStreamAudioSource(stream);
-            source.connect(this.analyser);
-
-            this.mediaStreamAudioSource = source;
-            this.currentSource = 'mic';
-
-            return source;
-        } catch (error) {
-            console.error('Microphone access denied or unavailable:', error);
-            throw error;
+    disconnectMic() {
+        if (this.msSrc) {
+            this.msSrc.mediaStream.getTracks().forEach(t => t.stop());
+            this.msSrc.disconnect(); this.msSrc = null;
         }
+        if (this.source === 'mic') this.source = this.audioEl ? 'file' : null;
     }
 
-    /**
-     * Disconnect all audio sources and stop playback.
-     */
-    disconnectAllSources() {
-        if (this.audioSource) {
-            this.audioSource.stop(0);
-            this.audioSource.disconnect();
-            this.audioSource = null;
-        }
-        if (this.mediaStreamAudioSource) {
-            this.mediaStreamAudioSource.disconnect();
-            this.mediaStreamAudioSource = null;
-        }
-        this.currentSource = null;
+    stop() {
+        if (this.audioEl) { this.audioEl.pause(); this.audioEl.currentTime = 0; }
+        this.disconnectMic(); this.source = null;
     }
 
-    /**
-     * Set FFT size (must be power of 2, 32 to 32768).
-     * @param {number} size - FFT size
-     */
-    setFftSize(size) {
-        if (this.analyser) {
-            this.analyser.fftSize = size;
-            const bufferLength = this.analyser.frequencyBinCount;
-            this.frequencyData = new Uint8Array(bufferLength);
-            this.timeDomainData = new Uint8Array(this.analyser.fftSize);
-        }
-    }
-
-    /**
-     * Set smoothing time constant (0–1, higher = more smoothing).
-     * @param {number} value - Smoothing constant
-     */
-    setSmoothing(value) {
-        if (this.analyser) {
-            this.analyser.smoothingTimeConstant = Math.max(0, Math.min(1, value));
-        }
-    }
-
-    /**
-     * Get frequency data (0–255 range).
-     */
-    getFrequencyData() {
-        if (this.analyser && this.frequencyData) {
-            this.analyser.getByteFrequencyData(this.frequencyData);
-            return this.frequencyData;
-        }
-        return null;
-    }
-
-    /**
-     * Get time-domain data (0–255 range).
-     */
-    getTimeDomainData() {
-        if (this.analyser && this.timeDomainData) {
-            this.analyser.getByteTimeDomainData(this.timeDomainData);
-            return this.timeDomainData;
-        }
-        return null;
-    }
-
-    /**
-     * Get current playback time (file mode only).
-     */
-    getCurrentTime() {
-        return this.audioContext ? this.audioContext.currentTime : 0;
-    }
-
-    /**
-     * Check if audio is currently playing.
-     */
-    isPlaying() {
-        return this.currentSource !== null &&
-               this.audioContext &&
-               this.audioContext.state === 'running';
-    }
-
-    /**
-     * Resume audio context (required after user gesture).
-     */
-    async resume() {
-        if (this.audioContext && this.audioContext.state === 'suspended') {
-            await this.audioContext.resume();
-        }
-    }
+    freq() { if (!this.analyser) return null; this.analyser.getByteFrequencyData(this.freqData); return this.freqData; }
+    time_() { if (!this.analyser) return null; this.analyser.getByteTimeDomainData(this.timeData); return this.timeData; }
+    async resume() { if (this.ctx?.state === 'suspended') await this.ctx.resume(); }
 }
 
 // ============================================================================
 // BEAT DETECTOR
 // ============================================================================
-
-/**
- * Energy-based beat detection.
- * Compares short-term energy average to long-term average.
- * Beat occurs when short > long * threshold.
- */
 class BeatDetector {
-    constructor(
-        historySize = 43, // ~1 second at 43 FPS
-        threshold = 1.3
-    ) {
-        this.historySize = historySize;
-        this.threshold = threshold;
-        this.energyHistory = [];
-        this.beatTime = 0;
-        this.beatCooldown = 0; // Prevent multiple beats in quick succession
+    constructor() {
+        this.history = []; this.histSize = 50;
+        this.threshold = 1.3; this.lastBeat = 0;
+        this.intensity = 0;   // 0..1 decaying
+        this.energy = 0;      // current bass energy
     }
 
-    /**
-     * Compute energy from frequency data (sum of squares).
-     * @param {Uint8Array} frequencyData - Frequency bins
-     * @returns {number} Normalized energy (0–1)
-     */
-    computeEnergy(frequencyData) {
-        if (!frequencyData) return 0;
-
+    update(freqData, now) {
+        if (!freqData) return false;
+        // Bass energy (first 20%)
+        const end = Math.max(4, Math.floor(freqData.length * 0.2));
         let sum = 0;
-        for (let i = 0; i < frequencyData.length; i++) {
-            const norm = frequencyData[i] / 255;
-            sum += norm * norm;
-        }
-        return Math.sqrt(sum / frequencyData.length);
+        for (let i = 0; i < end; i++) { const n = freqData[i] / 255; sum += n * n; }
+        this.energy = Math.sqrt(sum / end);
+
+        this.history.push(this.energy);
+        if (this.history.length > this.histSize) this.history.shift();
+
+        const short = Math.max(2, Math.floor(this.histSize * 0.1));
+        const sAvg = this.history.slice(-short).reduce((a,b)=>a+b,0) / short;
+        const lAvg = this.history.reduce((a,b)=>a+b,0) / this.history.length;
+
+        const beat = sAvg > lAvg * this.threshold && now - this.lastBeat > 0.16;
+        if (beat) { this.lastBeat = now; this.intensity = 1; }
+        return beat;
     }
 
-    /**
-     * Check for beat and update history.
-     * @param {number} currentEnergy - Energy value (0–1)
-     * @param {number} currentTime - Current timestamp in seconds
-     * @returns {boolean} True if a beat was detected
-     */
-    detect(currentEnergy, currentTime) {
-        // Add to history
-        this.energyHistory.push(currentEnergy);
-        if (this.energyHistory.length > this.historySize) {
-            this.energyHistory.shift();
+    decay(dt) { this.intensity = Math.max(0, this.intensity - dt * 5.5); }
+    reset() { this.history = []; this.lastBeat = 0; this.intensity = 0; }
+}
+
+// ============================================================================
+// STARFIELD
+// ============================================================================
+class Starfield {
+    constructor(count = 300) {
+        this.stars = [];
+        for (let i = 0; i < count; i++) {
+            this.stars.push({
+                x: Math.random(), y: Math.random(),
+                z: Math.random(),
+                size: 0.5 + Math.random() * 1.5,
+                twinkle: Math.random() * Math.PI * 2,
+            });
         }
-
-        // Compute short-term average (last ~100ms)
-        const shortSize = Math.max(2, Math.floor(this.historySize * 0.15));
-        const shortAvg = this.energyHistory.slice(-shortSize)
-            .reduce((a, b) => a + b, 0) / shortSize;
-
-        // Compute long-term average
-        const longAvg = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
-
-        // Beat detection with cooldown
-        const isBeat = shortAvg > longAvg * this.threshold &&
-                       currentTime - this.beatTime > 0.2;
-
-        if (isBeat) {
-            this.beatTime = currentTime;
-            return true;
-        }
-        return false;
     }
 
-    /**
-     * Set beat threshold (typically 1.0–3.0).
-     * @param {number} threshold - Beat threshold multiplier
-     */
-    setThreshold(threshold) {
-        this.threshold = Math.max(1.0, Math.min(3.0, threshold));
+    draw(ctx, w, h, bassEnergy, bi) {
+        const speed = 0.0003 + bassEnergy * 0.002 + bi * 0.004;
+        for (const s of this.stars) {
+            s.twinkle += 0.02 + bassEnergy * 0.05;
+            s.y -= speed * (0.5 + s.z);
+            if (s.y < -0.02) { s.y = 1.02; s.x = Math.random(); }
+
+            const alpha = (0.15 + s.z * 0.5) * (0.6 + 0.4 * Math.sin(s.twinkle));
+            const sz = s.size * (1 + bi * 0.8);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.arc(s.x * w, s.y * h, sz, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// PARTICLE SYSTEM
+// ============================================================================
+class Particles {
+    constructor(max = 400) { this.p = []; this.max = max; }
+
+    burst(x, y, count, palette, energy) {
+        for (let i = 0; i < count && this.p.length < this.max; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const spd = 60 + Math.random() * 280 * energy;
+            this.p.push({
+                x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd - 80*energy,
+                life: 1, decay: 0.4 + Math.random() * 0.7,
+                size: 1.5 + Math.random() * 3.5,
+                color: palette[Math.floor(Math.random()*palette.length)],
+            });
+        }
     }
 
-    /**
-     * Reset detector state.
-     */
-    reset() {
-        this.energyHistory = [];
-        this.beatTime = 0;
+    ambient(w, h, energy, palette) {
+        if (energy < 0.1 || this.p.length >= this.max) return;
+        const n = Math.floor(energy * 4);
+        for (let i = 0; i < n && this.p.length < this.max; i++) {
+            this.p.push({
+                x: Math.random()*w, y: h + 4,
+                vx: (Math.random()-0.5)*25,
+                vy: -(30 + Math.random()*100*energy),
+                life: 1, decay: 0.25 + Math.random()*0.35,
+                size: 0.8 + Math.random()*2,
+                color: palette[Math.floor(Math.random()*palette.length)],
+            });
+        }
+    }
+
+    update(dt) {
+        for (let i = this.p.length - 1; i >= 0; i--) {
+            const p = this.p[i];
+            p.x += p.vx * dt; p.y += p.vy * dt;
+            p.vy += 50 * dt; p.vx *= 0.995;
+            p.life -= p.decay * dt;
+            if (p.life <= 0) this.p.splice(i, 1);
+        }
+    }
+
+    draw(ctx) {
+        for (const p of this.p) {
+            const c = parseColor(p.color);
+            ctx.globalAlpha = Math.max(0, p.life * p.life);
+            ctx.fillStyle = rgb(c);
+            ctx.shadowBlur = 6; ctx.shadowColor = rgb(c);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
 }
 
 // ============================================================================
 // RENDERER
 // ============================================================================
-
-/**
- * Canvas 2D renderer for multiple visualization modes.
- * Handles all drawing, color interpolation, and layout logic.
- */
 class Renderer {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
-        this.colorPalette = COLOR_PRESETS.gradient;
-        this.visualMode = VISUAL_MODES.spectrum;
-        this.sensitivity = 1.0;
+        this.palette = COLOR_PRESETS.aurora;
+        this.paletteName = 'aurora';
+        this.mode = 'spectrum';
+        this.sensitivity = 1.8;
+        this.particles = new Particles();
+        this.starfield = new Starfield();
+        this.peaks = []; // peak dots per bar
+        this.smoothBars = []; // smoothed bar heights
+        this.waveHistory = []; // for wave mode trail
+        this.time = 0; // accumulated time for animations
+        this.lastT = performance.now();
 
-        // Resize canvas to match display size
-        this.resizeCanvas();
-        window.addEventListener('resize', () => this.resizeCanvas());
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
     }
 
-    /**
-     * Resize canvas to match container size.
-     */
-    resizeCanvas() {
-        const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width = rect.width * window.devicePixelRatio;
-        this.canvas.height = rect.height * window.devicePixelRatio;
-        this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    resize() {
+        const dpr = window.devicePixelRatio || 1;
+        this.canvas.width = window.innerWidth * dpr;
+        this.canvas.height = window.innerHeight * dpr;
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this.w = window.innerWidth;
+        this.h = window.innerHeight;
     }
 
-    /**
-     * Set color palette from preset name.
-     * @param {string} presetName - Preset key
-     */
-    setColorPalette(presetName) {
-        this.colorPalette = COLOR_PRESETS[presetName] || COLOR_PRESETS.gradient;
-    }
+    setMode(m) { this.mode = m; }
+    setPalette(name) { this.paletteName = name; this.palette = COLOR_PRESETS[name] || COLOR_PRESETS.aurora; }
 
-    /**
-     * Set visual mode.
-     * @param {string} mode - Visual mode key
-     */
-    setVisualMode(mode) {
-        this.visualMode = mode;
-    }
+    col(t) { return rgb(lerpColor(this.palette, t)); }
+    colObj(t) { return lerpColor(this.palette, t); }
 
-    /**
-     * Interpolate color from palette based on normalized value (0–1).
-     * @param {number} value - Value between 0 and 1
-     * @returns {string} CSS color string
-     */
-    interpolateColor(value) {
-        const v = Math.max(0, Math.min(1, value));
-        const idx = v * (this.colorPalette.length - 1);
-        const lower = Math.floor(idx);
-        const upper = Math.min(lower + 1, this.colorPalette.length - 1);
-        const t = idx - lower;
+    // ── Spectrum Bars ──────────────────────────────────────────────────
+    drawSpectrum(freq, bi, dt) {
+        if (!freq) return;
+        const { ctx, w, h } = this;
+        const count = Math.min(128, freq.length);
+        const gap = 2;
+        const bw = (w - gap * count) / count;
+        const baseY = h * 0.78;
 
-        // Simple linear interpolation between two colors
-        const c1 = this.parseColor(this.colorPalette[lower]);
-        const c2 = this.parseColor(this.colorPalette[upper]);
+        while (this.peaks.length < count) this.peaks.push({ h: 0, v: 0 });
+        while (this.smoothBars.length < count) this.smoothBars.push(0);
 
-        const r = Math.round(c1.r + (c2.r - c1.r) * t);
-        const g = Math.round(c1.g + (c2.g - c1.g) * t);
-        const b = Math.round(c1.b + (c2.b - c1.b) * t);
+        const boost = 1 + bi * 0.4;
 
-        return `rgb(${r}, ${g}, ${b})`;
-    }
+        for (let i = 0; i < count; i++) {
+            const raw = freq[i] / 255;
+            const wt = i < count*0.2 ? 1.5 : i < count*0.5 ? 1.15 : 0.85;
+            const target = Math.pow(raw * wt, 1.5) * this.sensitivity * boost;
+            // Smooth bars for fluid motion
+            this.smoothBars[i] += (target - this.smoothBars[i]) * Math.min(1, dt * 18);
+            const bh = Math.min(this.smoothBars[i] * baseY, baseY - 2);
+            const x = i * (bw + gap);
+            const t = i / count;
+            const c = this.colObj(t);
 
-    /**
-     * Parse hex or rgb color to { r, g, b } object.
-     * @param {string} colorStr - CSS color string
-     * @returns {object} { r, g, b } object with 0–255 values
-     */
-    parseColor(colorStr) {
-        const ctx = document.createElement('canvas').getContext('2d');
-        ctx.fillStyle = colorStr;
-        ctx.fillRect(0, 0, 1, 1);
-        const imageData = ctx.getImageData(0, 0, 1, 1).data;
-        return { r: imageData[0], g: imageData[1], b: imageData[2] };
-    }
+            // Bar gradient
+            const grad = ctx.createLinearGradient(x, baseY, x, baseY - bh);
+            grad.addColorStop(0, rgba(c, 0.9));
+            grad.addColorStop(1, rgba(c, 0.4));
+            ctx.fillStyle = grad;
 
-    /**
-     * Render spectrum bars visualization.
-     * @param {Uint8Array} frequencyData - Frequency bins
-     * @param {boolean} isBeat - Whether a beat is detected
-     */
-    renderSpectrum(frequencyData, isBeat) {
-        if (!frequencyData) return;
-
-        const width = this.canvas.width / window.devicePixelRatio;
-        const height = this.canvas.height / window.devicePixelRatio;
-        const barCount = Math.min(128, frequencyData.length);
-        const barWidth = width / barCount;
-
-        // Clear background
-        this.ctx.fillStyle = 'rgba(10, 10, 25, 0.3)';
-        this.ctx.fillRect(0, 0, width, height);
-
-        // Draw bars
-        for (let i = 0; i < barCount; i++) {
-            const value = frequencyData[i] / 255;
-            const amplifiedValue = Math.pow(value, 0.5) * this.sensitivity;
-            const barHeight = amplifiedValue * height;
-
-            const hue = i / barCount;
-            this.ctx.fillStyle = this.interpolateColor(hue);
-
-            // Add glow on beat
-            if (isBeat) {
-                this.ctx.shadowBlur = 20;
-                this.ctx.shadowColor = this.ctx.fillStyle;
-            } else {
-                this.ctx.shadowBlur = 5;
-                this.ctx.shadowColor = this.ctx.fillStyle;
+            // Rounded top
+            const r = Math.min(bw / 2, 4);
+            if (bh > r) {
+                ctx.beginPath();
+                ctx.moveTo(x, baseY);
+                ctx.lineTo(x, baseY - bh + r);
+                ctx.quadraticCurveTo(x, baseY - bh, x + r, baseY - bh);
+                ctx.lineTo(x + bw - r, baseY - bh);
+                ctx.quadraticCurveTo(x + bw, baseY - bh, x + bw, baseY - bh + r);
+                ctx.lineTo(x + bw, baseY);
+                ctx.fill();
+            } else if (bh > 0) {
+                ctx.fillRect(x, baseY - bh, bw, bh);
             }
 
-            this.ctx.fillRect(
-                i * barWidth,
-                height - barHeight,
-                barWidth * 0.8,
-                barHeight
-            );
-        }
-
-        this.ctx.shadowBlur = 0;
-    }
-
-    /**
-     * Render radial waveform visualization.
-     * @param {Uint8Array} timeDomainData - Time-domain samples
-     * @param {boolean} isBeat - Whether a beat is detected
-     */
-    renderRadial(timeDomainData, isBeat) {
-        if (!timeDomainData) return;
-
-        const width = this.canvas.width / window.devicePixelRatio;
-        const height = this.canvas.height / window.devicePixelRatio;
-        const centerX = width / 2;
-        const centerY = height / 2;
-        const maxRadius = Math.min(width, height) / 2 - 20;
-
-        // Clear background
-        this.ctx.fillStyle = 'rgba(10, 10, 25, 0.3)';
-        this.ctx.fillRect(0, 0, width, height);
-
-        // Draw waveform as radial line
-        this.ctx.beginPath();
-        const sampleCount = Math.min(512, timeDomainData.length);
-        for (let i = 0; i < sampleCount; i++) {
-            const angle = (i / sampleCount) * Math.PI * 2;
-            const value = (timeDomainData[i] - 128) / 128;
-            const radius = maxRadius + value * maxRadius * 0.5 * this.sensitivity;
-
-            const x = centerX + Math.cos(angle) * radius;
-            const y = centerY + Math.sin(angle) * radius;
-
-            if (i === 0) {
-                this.ctx.moveTo(x, y);
-            } else {
-                this.ctx.lineTo(x, y);
+            // Glow on beat
+            if (bi > 0.2) {
+                ctx.shadowBlur = 10 * bi;
+                ctx.shadowColor = rgb(c);
+                ctx.fillRect(x, baseY - bh, bw, 2);
+                ctx.shadowBlur = 0;
             }
+
+            // Reflection
+            ctx.globalAlpha = 0.08 + bi * 0.04;
+            const rGrad = ctx.createLinearGradient(x, baseY, x, baseY + bh * 0.35);
+            rGrad.addColorStop(0, rgba(c, 0.3));
+            rGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = rGrad;
+            ctx.fillRect(x, baseY + 1, bw, bh * 0.35);
+            ctx.globalAlpha = 1;
+
+            // Peak dot
+            const pk = this.peaks[i];
+            if (bh > pk.h) { pk.h = bh; pk.v = 0; }
+            else { pk.v += 500 * dt; pk.h -= pk.v * dt; }
+            if (pk.h < 0) pk.h = 0;
+
+            ctx.fillStyle = '#fff';
+            ctx.shadowBlur = 6; ctx.shadowColor = rgb(c);
+            ctx.fillRect(x, baseY - pk.h - 3, bw, 2.5);
+            ctx.shadowBlur = 0;
         }
-        this.ctx.closePath();
-
-        const gradient = this.ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, maxRadius);
-        gradient.addColorStop(0, this.interpolateColor(0.3));
-        gradient.addColorStop(1, this.interpolateColor(0.9));
-
-        this.ctx.fillStyle = gradient;
-        this.ctx.globalAlpha = 0.7;
-        this.ctx.fill();
-        this.ctx.globalAlpha = 1.0;
-
-        this.ctx.strokeStyle = this.interpolateColor(0.6);
-        this.ctx.lineWidth = isBeat ? 3 : 2;
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
-
-        if (isBeat) {
-            this.ctx.shadowBlur = 15;
-            this.ctx.shadowColor = this.ctx.strokeStyle;
-        }
-        this.ctx.stroke();
-        this.ctx.shadowBlur = 0;
     }
 
-    /**
-     * Render hybrid visualization (spectrum + radial).
-     * @param {Uint8Array} frequencyData - Frequency bins
-     * @param {Uint8Array} timeDomainData - Time-domain samples
-     * @param {boolean} isBeat - Whether a beat is detected
-     */
-    renderHybrid(frequencyData, timeDomainData, isBeat) {
-        if (!frequencyData || !timeDomainData) return;
+    // ── Radial ─────────────────────────────────────────────────────────
+    drawRadial(freq, td, bi) {
+        if (!td) return;
+        const { ctx, w, h } = this;
+        const cx = w/2, cy = h/2;
+        const maxR = Math.min(w, h) * 0.35;
+        const boost = 1 + bi * 0.5;
 
-        const width = this.canvas.width / window.devicePixelRatio;
-        const height = this.canvas.height / window.devicePixelRatio;
+        // Inner glow
+        const ig = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR * 0.4);
+        const ic = this.colObj(0.4);
+        ig.addColorStop(0, rgba(ic, 0.06 + bi * 0.06));
+        ig.addColorStop(1, 'transparent');
+        ctx.fillStyle = ig;
+        ctx.fillRect(0, 0, w, h);
 
-        // Clear background
-        this.ctx.fillStyle = 'rgba(10, 10, 25, 0.3)';
-        this.ctx.fillRect(0, 0, width, height);
+        // Frequency ring bars
+        if (freq) {
+            const bars = Math.min(96, freq.length);
+            const barW = (Math.PI * 2) / bars;
+            for (let i = 0; i < bars; i++) {
+                const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
+                const val = Math.pow(freq[i] / 255, 1.6) * this.sensitivity * boost;
+                const innerR = maxR * 0.42;
+                const outerR = innerR + val * maxR * 0.55;
+                const c = this.colObj(i / bars);
 
-        // Draw spectrum in lower half
-        const barCount = Math.min(64, frequencyData.length);
-        const barWidth = width / barCount;
-        for (let i = 0; i < barCount; i++) {
-            const value = frequencyData[i] / 255;
-            const amplifiedValue = Math.pow(value, 0.5) * this.sensitivity * 0.5;
-            const barHeight = amplifiedValue * (height / 2);
-
-            const hue = i / barCount;
-            this.ctx.fillStyle = this.interpolateColor(hue);
-            this.ctx.globalAlpha = 0.8;
-            this.ctx.fillRect(
-                i * barWidth,
-                height - barHeight,
-                barWidth * 0.9,
-                barHeight
-            );
-        }
-        this.ctx.globalAlpha = 1.0;
-
-        // Draw radial waveform in upper half
-        const centerX = width / 2;
-        const centerY = height / 4;
-        const maxRadius = Math.min(width, height) / 4 - 10;
-
-        this.ctx.beginPath();
-        const sampleCount = Math.min(256, timeDomainData.length);
-        for (let i = 0; i < sampleCount; i++) {
-            const angle = (i / sampleCount) * Math.PI * 2;
-            const value = (timeDomainData[i] - 128) / 128;
-            const radius = maxRadius + value * maxRadius * 0.3 * this.sensitivity;
-
-            const x = centerX + Math.cos(angle) * radius;
-            const y = centerY + Math.sin(angle) * radius;
-
-            if (i === 0) {
-                this.ctx.moveTo(x, y);
-            } else {
-                this.ctx.lineTo(x, y);
+                ctx.strokeStyle = rgba(c, 0.6 + bi * 0.3);
+                ctx.lineWidth = Math.max(2, (w / bars) * 0.5);
+                ctx.shadowBlur = bi > 0.3 ? 8 * bi : 0;
+                ctx.shadowColor = rgb(c);
+                ctx.beginPath();
+                ctx.moveTo(cx + Math.cos(angle) * innerR, cy + Math.sin(angle) * innerR);
+                ctx.lineTo(cx + Math.cos(angle) * outerR, cy + Math.sin(angle) * outerR);
+                ctx.stroke();
             }
+            ctx.shadowBlur = 0;
         }
-        this.ctx.closePath();
 
-        this.ctx.strokeStyle = this.interpolateColor(0.5);
-        this.ctx.lineWidth = isBeat ? 2.5 : 1.5;
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
-        this.ctx.stroke();
+        // Waveform ring
+        const samples = Math.min(512, td.length);
+        ctx.beginPath();
+        for (let i = 0; i <= samples; i++) {
+            const idx = i % samples;
+            const angle = (idx / samples) * Math.PI * 2 - Math.PI / 2;
+            const val = (td[idx] - 128) / 128;
+            const r = maxR * 0.42 + val * maxR * 0.2 * this.sensitivity * boost;
+            const x = cx + Math.cos(angle) * r;
+            const y = cy + Math.sin(angle) * r;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        const sc = this.colObj(0.5 + bi * 0.2);
+        ctx.strokeStyle = rgba(sc, 0.8);
+        ctx.lineWidth = 1.5 + bi * 2;
+        ctx.shadowBlur = 12 + bi * 25; ctx.shadowColor = rgb(sc);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Center circle
+        const ccR = maxR * 0.15 + bi * maxR * 0.05;
+        const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, ccR);
+        const cc1 = this.colObj(0.3), cc2 = this.colObj(0.7);
+        cg.addColorStop(0, rgba(cc1, 0.15 + bi * 0.1));
+        cg.addColorStop(1, rgba(cc2, 0));
+        ctx.fillStyle = cg;
+        ctx.beginPath(); ctx.arc(cx, cy, ccR, 0, Math.PI * 2); ctx.fill();
     }
 
-    /**
-     * Main render dispatch.
-     * @param {Uint8Array} frequencyData - Frequency bins
-     * @param {Uint8Array} timeDomainData - Time-domain samples
-     * @param {boolean} isBeat - Whether a beat is detected
-     */
-    render(frequencyData, timeDomainData, isBeat) {
-        switch (this.visualMode) {
-            case VISUAL_MODES.spectrum:
-                this.renderSpectrum(frequencyData, isBeat);
-                break;
-            case VISUAL_MODES.radial:
-                this.renderRadial(timeDomainData, isBeat);
-                break;
-            case VISUAL_MODES.hybrid:
-                this.renderHybrid(frequencyData, timeDomainData, isBeat);
-                break;
+    // ── Wave (terrain waveform) ────────────────────────────────────────
+    drawWave(td, freq, bi) {
+        if (!td) return;
+        const { ctx, w, h } = this;
+        const boost = 1 + bi * 0.3;
+        const midY = h * 0.5;
+
+        // Store waveform history for trailing effect
+        const pts = [];
+        const samples = Math.min(256, td.length);
+        for (let i = 0; i < samples; i++) {
+            const val = (td[i] - 128) / 128;
+            pts.push(val * this.sensitivity * boost);
         }
+        this.waveHistory.unshift(pts);
+        if (this.waveHistory.length > 12) this.waveHistory.pop();
+
+        // Draw trailing waves (back to front)
+        for (let w_i = this.waveHistory.length - 1; w_i >= 0; w_i--) {
+            const wave = this.waveHistory[w_i];
+            const alpha = (1 - w_i / this.waveHistory.length) * 0.5;
+            const yOff = w_i * 6;
+            const scale = 1 - w_i * 0.03;
+            const c = this.colObj(0.3 + w_i * 0.05);
+
+            ctx.beginPath();
+            for (let i = 0; i < wave.length; i++) {
+                const x = (i / (wave.length - 1)) * w;
+                const y = midY + wave[i] * h * 0.22 * scale + yOff;
+                i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            }
+            ctx.strokeStyle = rgba(c, alpha);
+            ctx.lineWidth = w_i === 0 ? 2.5 + bi * 2 : 1;
+            if (w_i === 0) { ctx.shadowBlur = 15 + bi * 20; ctx.shadowColor = rgba(c, 0.6); }
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Fill under main wave
+        if (this.waveHistory[0]) {
+            const wave = this.waveHistory[0];
+            ctx.beginPath();
+            ctx.moveTo(0, h);
+            for (let i = 0; i < wave.length; i++) {
+                const x = (i / (wave.length - 1)) * w;
+                const y = midY + wave[i] * h * 0.22;
+                ctx.lineTo(x, y);
+            }
+            ctx.lineTo(w, h); ctx.closePath();
+            const fg = ctx.createLinearGradient(0, midY - h*0.2, 0, h);
+            const fc = this.colObj(0.5);
+            fg.addColorStop(0, rgba(fc, 0.08 + bi * 0.06));
+            fg.addColorStop(1, 'transparent');
+            ctx.fillStyle = fg; ctx.fill();
+        }
+
+        // Frequency overlay as subtle bottom bars
+        if (freq) {
+            const bars = Math.min(64, freq.length);
+            const bw = w / bars;
+            for (let i = 0; i < bars; i++) {
+                const val = Math.pow(freq[i] / 255, 2) * this.sensitivity * 0.3 * boost;
+                const bh = val * h * 0.2;
+                const c = this.colObj(i / bars);
+                ctx.globalAlpha = 0.15;
+                ctx.fillStyle = rgb(c);
+                ctx.fillRect(i * bw, h - bh, bw - 1, bh);
+            }
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    // ── Galaxy / Starburst ─────────────────────────────────────────────
+    drawGalaxy(freq, td, bi) {
+        if (!freq) return;
+        const { ctx, w, h } = this;
+        const cx = w/2, cy = h/2;
+        const maxR = Math.min(w, h) * 0.42;
+        const boost = 1 + bi * 0.5;
+
+        // Rotating spiral arms from frequency data
+        const arms = 3;
+        const binsPerArm = Math.min(48, Math.floor(freq.length / arms));
+
+        for (let arm = 0; arm < arms; arm++) {
+            const armOffset = (arm / arms) * Math.PI * 2;
+            ctx.beginPath();
+            for (let i = 0; i < binsPerArm; i++) {
+                const fi = arm * binsPerArm + i;
+                const val = Math.pow(freq[fi] / 255, 1.5) * this.sensitivity * boost;
+                const progress = i / binsPerArm;
+                const spiralAngle = armOffset + progress * Math.PI * 3 + this.time * 0.3;
+                const r = maxR * 0.08 + progress * maxR * 0.85;
+                const wobble = val * maxR * 0.15;
+
+                const x = cx + Math.cos(spiralAngle) * (r + wobble);
+                const y = cy + Math.sin(spiralAngle) * (r + wobble);
+
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            const c = this.colObj(arm / arms + this.time * 0.05 % 1);
+            ctx.strokeStyle = rgba(c, 0.5 + bi * 0.3);
+            ctx.lineWidth = 2 + bi * 2;
+            ctx.shadowBlur = 15 + bi * 20; ctx.shadowColor = rgb(c);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Frequency dots orbiting
+        const dots = Math.min(96, freq.length);
+        for (let i = 0; i < dots; i++) {
+            const val = Math.pow(freq[i] / 255, 1.8) * this.sensitivity * boost;
+            if (val < 0.05) continue;
+            const angle = (i / dots) * Math.PI * 2 + this.time * 0.15 * (1 + i % 3 * 0.3);
+            const r = maxR * 0.15 + (i / dots) * maxR * 0.75;
+            const x = cx + Math.cos(angle) * r;
+            const y = cy + Math.sin(angle) * r;
+            const c = this.colObj(i / dots);
+
+            ctx.globalAlpha = val * 0.8;
+            ctx.fillStyle = rgb(c);
+            ctx.shadowBlur = 4 + val * 8; ctx.shadowColor = rgb(c);
+            ctx.beginPath();
+            ctx.arc(x, y, 1.5 + val * 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+
+        // Central orb
+        const orbR = maxR * 0.06 + bi * maxR * 0.04;
+        const og = ctx.createRadialGradient(cx, cy, 0, cx, cy, orbR * 3);
+        const oc = this.colObj(0.5 + this.time * 0.1 % 1);
+        og.addColorStop(0, rgba(oc, 0.3 + bi * 0.2));
+        og.addColorStop(0.4, rgba(oc, 0.05));
+        og.addColorStop(1, 'transparent');
+        ctx.fillStyle = og;
+        ctx.fillRect(cx - orbR*3, cy - orbR*3, orbR*6, orbR*6);
+
+        ctx.fillStyle = rgba(oc, 0.7 + bi * 0.3);
+        ctx.shadowBlur = 20 + bi * 30; ctx.shadowColor = rgb(oc);
+        ctx.beginPath(); ctx.arc(cx, cy, orbR, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    // ── Hybrid ─────────────────────────────────────────────────────────
+    drawHybrid(freq, td, bi, dt) {
+        if (!freq || !td) return;
+        const { ctx, w, h } = this;
+        const boost = 1 + bi * 0.4;
+
+        // Bottom bars (compact)
+        const count = Math.min(80, freq.length);
+        const gap = 1.5;
+        const bw = (w - gap * count) / count;
+        const baseY = h * 0.88;
+        for (let i = 0; i < count; i++) {
+            const raw = freq[i] / 255;
+            const wt = i < count*0.2 ? 1.4 : 1.0;
+            const val = Math.pow(raw * wt, 1.5) * this.sensitivity * 0.5 * boost;
+            const bh = Math.min(val * h * 0.35, h * 0.35);
+            const x = i * (bw + gap);
+            const c = this.colObj(i / count);
+            ctx.fillStyle = rgba(c, 0.7 + bi * 0.2);
+            ctx.fillRect(x, baseY - bh, bw, bh);
+        }
+
+        // Centered radial (compact)
+        const cx = w/2, cy = h * 0.38;
+        const maxR = Math.min(w, h) * 0.2;
+        const samples = Math.min(256, td.length);
+
+        // Ring bars
+        const ringBars = Math.min(64, freq.length);
+        for (let i = 0; i < ringBars; i++) {
+            const angle = (i / ringBars) * Math.PI * 2 - Math.PI/2;
+            const val = Math.pow(freq[i] / 255, 1.5) * this.sensitivity * 0.8 * boost;
+            const iR = maxR * 0.5;
+            const oR = iR + val * maxR * 0.5;
+            const c = this.colObj(i / ringBars);
+            ctx.strokeStyle = rgba(c, 0.5);
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cx + Math.cos(angle)*iR, cy + Math.sin(angle)*iR);
+            ctx.lineTo(cx + Math.cos(angle)*oR, cy + Math.sin(angle)*oR);
+            ctx.stroke();
+        }
+
+        // Waveform ring
+        ctx.beginPath();
+        for (let i = 0; i <= samples; i++) {
+            const idx = i % samples;
+            const angle = (idx / samples) * Math.PI * 2 - Math.PI/2;
+            const val = (td[idx] - 128) / 128;
+            const r = maxR * 0.5 + val * maxR * 0.18 * this.sensitivity * boost;
+            const x = cx + Math.cos(angle)*r;
+            const y = cy + Math.sin(angle)*r;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        const sc = this.colObj(0.5);
+        ctx.strokeStyle = rgba(sc, 0.7);
+        ctx.lineWidth = 1.5 + bi * 1.5;
+        ctx.shadowBlur = 10 + bi * 15; ctx.shadowColor = rgb(sc);
+        ctx.stroke(); ctx.shadowBlur = 0;
+    }
+
+    // ── Main Render ────────────────────────────────────────────────────
+    render(freq, td, beat) {
+        const now = performance.now();
+        const dt = Math.min(0.05, (now - this.lastT) / 1000);
+        this.lastT = now;
+        this.time += dt;
+        const { ctx, w, h } = this;
+        const bi = beat.intensity;
+
+        // Compute bass energy
+        let bass = 0;
+        if (freq) {
+            const end = Math.max(4, Math.floor(freq.length * 0.12));
+            let s = 0; for (let i = 0; i < end; i++) s += freq[i] / 255;
+            bass = s / end;
+        }
+
+        // Clear
+        ctx.clearRect(0, 0, w, h);
+
+        // Dynamic background gradient that breathes with music
+        const bg1 = Math.floor(5 + bi * 15 + bass * 8);
+        const bg2 = Math.floor(5 + bi * 10 + bass * 5);
+        const bg3 = Math.floor(12 + bi * 30 + bass * 15);
+        const bgGrad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w, h) * 0.7);
+        bgGrad.addColorStop(0, `rgb(${bg1},${bg2},${bg3})`);
+        bgGrad.addColorStop(1, `rgb(${Math.floor(bg1*0.3)},${Math.floor(bg2*0.3)},${Math.floor(bg3*0.4)})`);
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Beat flash
+        if (bi > 0.05) {
+            ctx.fillStyle = `rgba(255,255,255,${bi * 0.06})`;
+            ctx.fillRect(0, 0, w, h);
+        }
+
+        // Starfield
+        this.starfield.draw(ctx, w, h, bass, bi);
+
+        // Visualization
+        switch (this.mode) {
+            case 'spectrum': this.drawSpectrum(freq, bi, dt); break;
+            case 'radial':   this.drawRadial(freq, td, bi); break;
+            case 'wave':     this.drawWave(td, freq, bi); break;
+            case 'galaxy':   this.drawGalaxy(freq, td, bi); break;
+            case 'hybrid':   this.drawHybrid(freq, td, bi, dt); break;
+        }
+
+        // Particles
+        if (bi > 0.85) {
+            const bx = this.mode === 'radial' || this.mode === 'galaxy' ? w/2 : w/2;
+            const by = this.mode === 'radial' || this.mode === 'galaxy' ? h/2 : h * 0.75;
+            this.particles.burst(bx, by, 12 + Math.floor(bass * 25), this.palette, bass + bi);
+        }
+        this.particles.ambient(w, h, bass, this.palette);
+        this.particles.update(dt);
+        this.particles.draw(ctx);
+
+        // Vignette
+        const vg = ctx.createRadialGradient(w/2, h/2, w * 0.25, w/2, h/2, w * 0.75);
+        vg.addColorStop(0, 'transparent');
+        vg.addColorStop(1, 'rgba(0,0,0,0.4)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, w, h);
     }
 }
 
 // ============================================================================
-// MAIN APPLICATION
+// APP
 // ============================================================================
-
-/**
- * Main application orchestrator.
- * Manages UI bindings, animation loop, and state.
- */
-class VisualizerApp {
+class App {
     constructor() {
-        // Core components
-        this.audioManager = new AudioManager();
-        this.beatDetector = new BeatDetector(43, 1.3);
+        this.audio = new AudioManager();
+        this.beat = new BeatDetector();
         this.renderer = new Renderer(document.getElementById('visualizer-canvas'));
+        this.trackName = '';
 
-        // UI state
-        this.isPlaying = false;
-        this.frameCount = 0;
-        this.fpsTime = performance.now();
-
-        // DOM elements
-        this.elements = {
-            fileInput: document.getElementById('file-input'),
-            micToggle: document.getElementById('mic-toggle'),
-            playPause: document.getElementById('play-pause'),
-            visualMode: document.getElementById('visual-mode'),
-            colorPreset: document.getElementById('color-preset'),
-            fftSize: document.getElementById('fft-size'),
-            fftValue: document.getElementById('fft-value'),
-            smoothing: document.getElementById('smoothing'),
-            smoothingValue: document.getElementById('smoothing-value'),
-            sensitivity: document.getElementById('sensitivity'),
-            sensitivityValue: document.getElementById('sensitivity-value'),
-            beatThreshold: document.getElementById('beat-threshold'),
-            beatThresholdValue: document.getElementById('beat-threshold-value'),
-            fpsDisplay: document.getElementById('fps'),
-            beatIndicator: document.getElementById('beat-indicator')
+        this.el = {
+            canvas:       document.getElementById('visualizer-canvas'),
+            welcome:      document.getElementById('welcome-overlay'),
+            dropOverlay:  document.getElementById('drop-overlay'),
+            fileInput:    document.getElementById('file-input'),
+            fileInput2:   document.getElementById('file-input-2'),
+            ctrlToggle:   document.getElementById('controls-toggle'),
+            ctrlPanel:    document.getElementById('controls-panel'),
+            playerBar:    document.getElementById('player-bar'),
+            playPause:    document.getElementById('player-play-pause'),
+            iconPlay:     document.getElementById('icon-play'),
+            iconPause:    document.getElementById('icon-pause'),
+            track:        document.getElementById('player-track'),
+            seekInput:    document.getElementById('player-seek'),
+            seekProgress: document.getElementById('seek-progress'),
+            timeCur:      document.getElementById('player-time-current'),
+            timeDur:      document.getElementById('player-time-duration'),
+            volIcon:      document.getElementById('player-volume-icon'),
+            volRange:     document.getElementById('player-volume'),
+            sensitivity:  document.getElementById('sensitivity'),
+            beatThreshold:document.getElementById('beat-threshold'),
+            micToggle:    document.getElementById('mic-toggle'),
         };
 
-        this.setupEventListeners();
+        this.bind();
     }
 
-    /**
-     * Attach all event listeners to UI controls.
-     */
-    setupEventListeners() {
-        // File input
-        this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+    bind() {
+        // File inputs
+        this.el.fileInput.addEventListener('change', e => this.loadFile(e.target.files[0]));
+        this.el.fileInput2.addEventListener('change', e => this.loadFile(e.target.files[0]));
 
-        // Microphone toggle
-        this.elements.micToggle.addEventListener('click', () => this.toggleMicrophone());
-
-        // Play/pause
-        this.elements.playPause.addEventListener('click', () => this.togglePlayPause());
-
-        // Visual mode
-        this.elements.visualMode.addEventListener('change', (e) => {
-            this.renderer.setVisualMode(e.target.value);
+        // Drag & drop
+        document.addEventListener('dragover', e => { e.preventDefault(); this.el.dropOverlay.classList.remove('hidden'); });
+        document.addEventListener('dragleave', e => {
+            if (e.relatedTarget === null) this.el.dropOverlay.classList.add('hidden');
+        });
+        document.addEventListener('drop', e => {
+            e.preventDefault(); this.el.dropOverlay.classList.add('hidden');
+            const f = e.dataTransfer.files[0];
+            if (f && f.type.startsWith('audio')) this.loadFile(f);
         });
 
-        // Color preset
-        this.elements.colorPreset.addEventListener('change', (e) => {
-            this.renderer.setColorPalette(e.target.value);
+        // Controls panel toggle
+        this.el.ctrlToggle.addEventListener('click', () => {
+            this.el.ctrlPanel.classList.toggle('hidden');
         });
 
-        // FFT size
-        this.elements.fftSize.addEventListener('input', (e) => {
-            const exponent = parseInt(e.target.value);
-            const size = Math.pow(2, exponent);
-            this.audioManager.setFftSize(size);
-            this.elements.fftValue.textContent = size;
+        // Mode pills
+        document.querySelectorAll('.pill[data-mode]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.renderer.setMode(btn.dataset.mode);
+            });
         });
 
-        // Smoothing
-        this.elements.smoothing.addEventListener('input', (e) => {
-            const value = parseFloat(e.target.value);
-            this.audioManager.setSmoothing(value);
-            this.elements.smoothingValue.textContent = value.toFixed(2);
+        // Color swatches
+        document.querySelectorAll('.swatch[data-palette]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.swatch').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.renderer.setPalette(btn.dataset.palette);
+            });
         });
 
-        // Sensitivity
-        this.elements.sensitivity.addEventListener('input', (e) => {
+        // Sliders
+        this.el.sensitivity.addEventListener('input', e => {
             this.renderer.sensitivity = parseFloat(e.target.value);
-            this.elements.sensitivityValue.textContent = e.target.value;
+        });
+        this.el.beatThreshold.addEventListener('input', e => {
+            this.beat.threshold = Math.max(1, Math.min(3, parseFloat(e.target.value)));
         });
 
-        // Beat threshold
-        this.elements.beatThreshold.addEventListener('input', (e) => {
-            const value = parseFloat(e.target.value);
-            this.beatDetector.setThreshold(value);
-            this.elements.beatThresholdValue.textContent = value.toFixed(1);
+        // Player
+        this.el.playPause.addEventListener('click', () => this.togglePlay());
+        this.el.seekInput.addEventListener('input', () => {
+            if (this.audio.duration) {
+                this.audio.time = (this.el.seekInput.value / 1000) * this.audio.duration;
+            }
+        });
+        this.el.volRange.addEventListener('input', () => {
+            this.audio.vol = parseFloat(this.el.volRange.value);
+            this.updateVolIcon();
+        });
+        this.el.volIcon.addEventListener('click', () => {
+            if (this.audio.vol > 0) { this._pv = this.audio.vol; this.audio.vol = 0; this.el.volRange.value = 0; }
+            else { this.audio.vol = this._pv || 1; this.el.volRange.value = this.audio.vol; }
+            this.updateVolIcon();
         });
 
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+        // Mic
+        this.el.micToggle.addEventListener('click', () => this.toggleMic());
+
+        // Keyboard
+        document.addEventListener('keydown', e => this.key(e));
+
+        // Close panel on outside click
+        document.addEventListener('click', e => {
+            if (!this.el.ctrlPanel.classList.contains('hidden') &&
+                !this.el.ctrlPanel.contains(e.target) &&
+                !this.el.ctrlToggle.contains(e.target)) {
+                this.el.ctrlPanel.classList.add('hidden');
+            }
+        });
     }
 
-    /**
-     * Handle audio file selection.
-     * @param {Event} event - File input change event
-     */
-    async handleFileSelect(event) {
-        const file = event.target.files[0];
+    async loadFile(file) {
         if (!file) return;
+        await this.audio.resume();
+        this.audio.loadFile(file);
+        this.trackName = file.name.replace(/\.[^.]+$/, '');
+        this.el.track.textContent = this.trackName;
 
-        try {
-            // Resume audio context (may be suspended)
-            await this.audioManager.resume();
+        // Hide welcome, show player
+        this.el.welcome.classList.add('hidden');
+        this.el.playerBar.classList.remove('hidden');
 
-            // Load and play audio
-            const source = await this.audioManager.loadAudioFile(file);
-            source.start(0);
+        const ae = this.audio.audioEl;
+        ae.onloadedmetadata = () => {
+            this.el.seekInput.value = 0;
+            this.el.seekProgress.style.width = '0%';
+            this.el.timeDur.textContent = this.fmt(ae.duration);
+        };
+        ae.onended = () => this.updatePlayBtn();
 
-            this.isPlaying = true;
-            this.updatePlayPauseButton();
-            this.beatDetector.reset();
-        } catch (error) {
-            alert('Error loading audio file. Make sure it\'s a valid audio file.');
-            console.error(error);
-        }
+        await ae.play().catch(() => {});
+        this.updatePlayBtn();
+        this.beat.reset();
     }
 
-    /**
-     * Toggle microphone input.
-     */
-    async toggleMicrophone() {
-        try {
-            // Resume audio context
-            await this.audioManager.resume();
+    async togglePlay() {
+        if (!this.audio.audioEl) return;
+        await this.audio.resume();
+        if (this.audio.paused) await this.audio.play().catch(() => {});
+        else this.audio.pause();
+        this.updatePlayBtn();
+    }
 
-            if (this.audioManager.currentSource === 'mic') {
-                // Disable microphone
-                this.audioManager.disconnectAllSources();
-                this.elements.micToggle.classList.remove('active');
-                this.isPlaying = false;
+    async toggleMic() {
+        try {
+            await this.audio.resume();
+            if (this.audio.source === 'mic') {
+                this.audio.disconnectMic();
+                this.el.micToggle.classList.remove('active');
             } else {
-                // Enable microphone
-                await this.audioManager.enableMicrophone();
-                this.elements.micToggle.classList.add('active');
-                this.isPlaying = true;
+                await this.audio.enableMic();
+                this.el.micToggle.classList.add('active');
+                this.el.welcome.classList.add('hidden');
+                this.el.playerBar.classList.remove('hidden');
+                this.el.track.textContent = '🎤 Microphone Input';
             }
-
-            this.updatePlayPauseButton();
-            this.beatDetector.reset();
-        } catch (error) {
-            alert('Microphone access denied. Please allow microphone access and try again.');
-            console.error(error);
-        }
-    }
-
-    /**
-     * Toggle play/pause for file playback.
-     */
-    async togglePlayPause() {
-        if (this.audioManager.currentSource !== 'file') return;
-
-        await this.audioManager.resume();
-
-        if (this.isPlaying) {
-            this.audioManager.audioSource.stop(0);
-            this.isPlaying = false;
-        } else {
-            const file = this.elements.fileInput.files[0];
-            if (file) {
-                const source = await this.audioManager.loadAudioFile(file);
-                source.start(0);
-                this.isPlaying = true;
+            this.beat.reset();
+        } catch (err) {
+            if (err.message === 'NOT_SUPPORTED') {
+                alert('Microphone requires HTTPS. The mic will work once this is deployed as a website (or use localhost).');
+            } else if (err.message === 'DENIED') {
+                alert('Microphone access was blocked. Click the lock/camera icon in your address bar to allow microphone access, then try again.');
+            } else {
+                alert('Could not access microphone: ' + err.message);
             }
         }
-
-        this.updatePlayPauseButton();
     }
 
-    /**
-     * Update play/pause button appearance and enable state.
-     */
-    updatePlayPauseButton() {
-        if (this.audioManager.currentSource === 'file') {
-            this.elements.playPause.disabled = false;
-            this.elements.playPause.textContent = this.isPlaying ? '⏸ Pause' : '▶ Play';
-        } else {
-            this.elements.playPause.disabled = true;
-            this.elements.playPause.textContent = '▶ Play';
-        }
-    }
-
-    /**
-     * Handle keyboard shortcuts.
-     * @param {KeyboardEvent} event - Keyboard event
-     */
-    handleKeyboard(event) {
-        switch (event.code) {
-            case 'Space':
-                event.preventDefault();
-                this.togglePlayPause();
+    key(e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+        const modes = VISUAL_MODES;
+        switch (e.code) {
+            case 'Space': e.preventDefault(); this.togglePlay(); break;
+            case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5': {
+                const i = parseInt(e.code.slice(-1)) - 1;
+                if (modes[i]) {
+                    this.renderer.setMode(modes[i]);
+                    document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+                    document.querySelector(`.pill[data-mode="${modes[i]}"]`)?.classList.add('active');
+                }
                 break;
-            case 'Digit1':
-                this.renderer.setVisualMode(VISUAL_MODES.spectrum);
-                this.elements.visualMode.value = VISUAL_MODES.spectrum;
-                break;
-            case 'Digit2':
-                this.renderer.setVisualMode(VISUAL_MODES.radial);
-                this.elements.visualMode.value = VISUAL_MODES.radial;
-                break;
-            case 'Digit3':
-                this.renderer.setVisualMode(VISUAL_MODES.hybrid);
-                this.elements.visualMode.value = VISUAL_MODES.hybrid;
-                break;
-            case 'KeyR':
-                this.beatDetector.reset();
-                break;
+            }
+            case 'ArrowLeft':  if (this.audio.audioEl) this.audio.time = Math.max(0, this.audio.time - 5); break;
+            case 'ArrowRight': if (this.audio.audioEl) this.audio.time = Math.min(this.audio.duration, this.audio.time + 5); break;
+            case 'KeyF': this.toggleFullscreen(); break;
             case 'Escape':
-                this.audioManager.disconnectAllSources();
-                this.isPlaying = false;
-                this.elements.micToggle.classList.remove('active');
-                this.updatePlayPauseButton();
+                if (document.fullscreenElement) document.exitFullscreen();
+                else { this.audio.stop(); this.el.micToggle.classList.remove('active'); this.updatePlayBtn(); }
                 break;
         }
     }
 
-    /**
-     * Update FPS counter (60 times per second).
-     */
-    updateFPS() {
-        this.frameCount++;
-        const now = performance.now();
-        if (now - this.fpsTime >= 1000) {
-            this.elements.fpsDisplay.textContent = this.frameCount;
-            this.frameCount = 0;
-            this.fpsTime = now;
-        }
+    toggleFullscreen() {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
     }
 
-    /**
-     * Main animation loop.
-     * Called 60 times per second via requestAnimationFrame.
-     */
-    animationLoop() {
-        // Get audio data
-        const frequencyData = this.audioManager.getFrequencyData();
-        const timeDomainData = this.audioManager.getTimeDomainData();
-
-        // Detect beat
-        let isBeat = false;
-        if (frequencyData) {
-            const energy = this.beatDetector.computeEnergy(frequencyData);
-            isBeat = this.beatDetector.detect(energy, performance.now() / 1000);
-        }
-
-        // Update beat indicator
-        this.elements.beatIndicator.textContent = isBeat ? '●' : '○';
-        this.elements.beatIndicator.style.color = isBeat ? '#ff0000' : '#00ff00';
-
-        // Render visualization
-        this.renderer.render(frequencyData, timeDomainData, isBeat);
-
-        // Update FPS counter
-        this.updateFPS();
-
-        // Continue loop
-        requestAnimationFrame(() => this.animationLoop());
+    updatePlayBtn() {
+        const paused = this.audio.paused;
+        this.el.iconPlay.classList.toggle('hidden', !paused);
+        this.el.iconPause.classList.toggle('hidden', paused);
     }
 
-    /**
-     * Start the application.
-     */
+    updateVolIcon() {
+        const v = this.audio.vol;
+        const svg = this.el.volIcon.querySelector('svg');
+        // Simple approach: change opacity on mute
+        svg.style.opacity = v === 0 ? '0.3' : '1';
+    }
+
+    fmt(s) {
+        if (!isFinite(s)) return '0:00';
+        const m = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    // ── Loop ───────────────────────────────────────────────────────────
+    loop = () => {
+        const freq = this.audio.freq();
+        const td = this.audio.time_();
+
+        if (freq) this.beat.update(freq, performance.now() / 1000);
+        this.beat.decay(1 / 60);
+
+        this.renderer.render(freq, td, this.beat);
+
+        // Sync player bar
+        if (this.audio.duration && this.audio.source === 'file') {
+            const pct = this.audio.time / this.audio.duration;
+            this.el.seekInput.value = pct * 1000;
+            this.el.seekProgress.style.width = (pct * 100) + '%';
+            this.el.timeCur.textContent = this.fmt(this.audio.time);
+        }
+
+        requestAnimationFrame(this.loop);
+    };
+
     start() {
-        console.log('Music Visualizer initialized and running...');
-        this.animationLoop();
+        console.log('Music Visualizer v3 — Immersive Edition');
+        this.loop();
     }
 }
 
 // ============================================================================
-// INITIALIZATION
+// INIT
 // ============================================================================
-
-// Start app when DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        const app = new VisualizerApp();
-        app.start();
-    });
+    document.addEventListener('DOMContentLoaded', () => new App().start());
 } else {
-    const app = new VisualizerApp();
-    app.start();
+    new App().start();
 }
-

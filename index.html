@@ -5,83 +5,134 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Visualizer</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>🎵 Music Visualizer</h1>
-            <p class="subtitle">Real-time audio visualization with beat detection</p>
-        </header>
+    <!-- Fullscreen canvas background -->
+    <canvas id="visualizer-canvas"></canvas>
 
-        <!-- Controls Panel -->
-        <div class="controls">
-            <!-- Audio Input Section -->
-            <div class="control-group">
-                <label for="file-input" class="control-label">Load Audio File:</label>
-                <input type="file" id="file-input" accept="audio/*" class="file-input">
-                <button id="mic-toggle" class="btn btn-secondary">🎤 Enable Microphone</button>
-                <button id="play-pause" class="btn btn-primary" disabled>▶ Play</button>
+    <!-- Drop overlay -->
+    <div id="drop-overlay" class="drop-overlay hidden">
+        <div class="drop-content">
+            <div class="drop-icon">🎵</div>
+            <p>Drop your audio file here</p>
+        </div>
+    </div>
+
+    <!-- Welcome overlay (shown before first file) -->
+    <div id="welcome-overlay" class="welcome-overlay">
+        <div class="welcome-card">
+            <div class="welcome-logo">
+                <span class="logo-bar" style="--i:0"></span>
+                <span class="logo-bar" style="--i:1"></span>
+                <span class="logo-bar" style="--i:2"></span>
+                <span class="logo-bar" style="--i:3"></span>
+                <span class="logo-bar" style="--i:4"></span>
             </div>
-
-            <!-- Display Mode Section -->
-            <div class="control-group">
-                <label for="visual-mode" class="control-label">Visual Mode:</label>
-                <select id="visual-mode" class="select-input">
-                    <option value="spectrum">Spectrum Bars</option>
-                    <option value="radial">Radial Waveform</option>
-                    <option value="hybrid">Hybrid (Bars + Waveform)</option>
-                </select>
-                <label for="color-preset" class="control-label">Color Palette:</label>
-                <select id="color-preset" class="select-input">
-                    <option value="gradient">Rainbow Gradient</option>
-                    <option value="fire">Fire</option>
-                    <option value="ocean">Ocean</option>
-                    <option value="neon">Neon</option>
-                    <option value="mono">Monochrome</option>
-                </select>
-            </div>
-
-            <!-- FFT & Smoothing Section -->
-            <div class="control-group">
-                <div class="slider-group">
-                    <label for="fft-size" class="control-label">FFT Size: <span id="fft-value">256</span></label>
-                    <input type="range" id="fft-size" min="5" max="14" value="8" class="slider">
-                    <small>2^5=32 to 2^14=16384 bins</small>
-                </div>
-                <div class="slider-group">
-                    <label for="smoothing" class="control-label">Smoothing: <span id="smoothing-value">0.85</span></label>
-                    <input type="range" id="smoothing" min="0" max="0.99" step="0.01" value="0.85" class="slider">
-                </div>
-                <div class="slider-group">
-                    <label for="sensitivity" class="control-label">Sensitivity: <span id="sensitivity-value">1.0</span></label>
-                    <input type="range" id="sensitivity" min="0.1" max="5" step="0.1" value="1.0" class="slider">
-                </div>
-                <div class="slider-group">
-                    <label for="beat-threshold" class="control-label">Beat Threshold: <span id="beat-threshold-value">1.3</span></label>
-                    <input type="range" id="beat-threshold" min="1" max="3" step="0.1" value="1.3" class="slider">
-                </div>
-            </div>
-
-            <!-- Info Section -->
-            <div class="control-group">
-                <div class="info-box">
-                    <p><strong>Keyboard Shortcuts:</strong></p>
-                    <p>Space: Play/Pause | 1/2/3: Mode | R: Reset | Esc: Stop</p>
-                </div>
+            <h1>Music Visualizer</h1>
+            <p class="welcome-sub">Drop an audio file anywhere or click below</p>
+            <label for="file-input" class="welcome-btn">
+                <span>Choose Audio File</span>
+            </label>
+            <input type="file" id="file-input" accept="audio/*" class="sr-only">
+            <div class="welcome-hint">
+                Supports MP3, WAV, OGG, FLAC, AAC
             </div>
         </div>
+    </div>
 
-        <!-- Canvas Container -->
-        <div class="canvas-container">
-            <canvas id="visualizer-canvas"></canvas>
-            <div class="debug-info">
-                <p><strong>FPS:</strong> <span id="fps">60</span> | <strong>Beat:</strong> <span id="beat-indicator">—</span></p>
+    <!-- Floating controls panel (top-right) -->
+    <div id="controls-toggle" class="controls-toggle" title="Settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+    </div>
+
+    <div id="controls-panel" class="controls-panel hidden">
+        <div class="panel-section">
+            <div class="panel-label">Visual Mode</div>
+            <div class="mode-pills">
+                <button class="pill active" data-mode="spectrum">Spectrum</button>
+                <button class="pill" data-mode="radial">Radial</button>
+                <button class="pill" data-mode="wave">Wave</button>
+                <button class="pill" data-mode="galaxy">Galaxy</button>
+                <button class="pill" data-mode="hybrid">Hybrid</button>
             </div>
         </div>
+        <div class="panel-section">
+            <div class="panel-label">Color Theme</div>
+            <div class="color-swatches">
+                <button class="swatch" data-palette="neon" title="Neon">
+                    <span style="background:linear-gradient(135deg,#ff006e,#3a86ff)"></span>
+                </button>
+                <button class="swatch" data-palette="gradient" title="Rainbow">
+                    <span style="background:linear-gradient(135deg,#ff0000,#00ff00,#0000ff)"></span>
+                </button>
+                <button class="swatch" data-palette="fire" title="Fire">
+                    <span style="background:linear-gradient(135deg,#ff4400,#ffcc00)"></span>
+                </button>
+                <button class="swatch" data-palette="ocean" title="Ocean">
+                    <span style="background:linear-gradient(135deg,#003366,#00ffff)"></span>
+                </button>
+                <button class="swatch active" data-palette="aurora" title="Aurora">
+                    <span style="background:linear-gradient(135deg,#00ff87,#60efff,#b967ff)"></span>
+                </button>
+                <button class="swatch" data-palette="sunset" title="Sunset">
+                    <span style="background:linear-gradient(135deg,#f72585,#7209b7,#3a0ca3)"></span>
+                </button>
+                <button class="swatch" data-palette="mono" title="Mono">
+                    <span style="background:linear-gradient(135deg,#333,#fff)"></span>
+                </button>
+            </div>
+        </div>
+        <div class="panel-section">
+            <div class="panel-label">Sensitivity</div>
+            <input type="range" id="sensitivity" min="0.5" max="4" step="0.1" value="1.8" class="styled-range">
+        </div>
+        <div class="panel-section">
+            <div class="panel-label">Beat Sensitivity</div>
+            <input type="range" id="beat-threshold" min="1" max="3" step="0.1" value="1.3" class="styled-range">
+        </div>
+        <div class="panel-section">
+            <button id="mic-toggle" class="mic-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                <span>Microphone</span>
+            </button>
+        </div>
+        <div class="panel-section panel-shortcuts">
+            <span>Space</span> Play &nbsp; <span>←→</span> Skip &nbsp; <span>1-5</span> Mode &nbsp; <span>F</span> Fullscreen
+        </div>
+    </div>
+
+    <!-- Player bar -->
+    <div id="player-bar" class="player-bar hidden">
+        <button id="player-play-pause" class="player-btn" title="Play/Pause">
+            <svg id="icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+            <svg id="icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" class="hidden"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+        </button>
+        <div class="player-info">
+            <div id="player-track" class="player-track">No track loaded</div>
+        </div>
+        <span id="player-time-current" class="player-time">0:00</span>
+        <div class="seek-container">
+            <div class="seek-track">
+                <div id="seek-progress" class="seek-progress"></div>
+            </div>
+            <input type="range" id="player-seek" class="seek-input" min="0" max="1000" value="0">
+        </div>
+        <span id="player-time-duration" class="player-time">0:00</span>
+        <div class="volume-group">
+            <button id="player-volume-icon" class="vol-btn" title="Mute">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+            </button>
+            <input type="range" id="player-volume" class="vol-range" min="0" max="1" step="0.01" value="1">
+        </div>
+        <label for="file-input-2" class="add-btn" title="Load another file">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        </label>
+        <input type="file" id="file-input-2" accept="audio/*" class="sr-only">
     </div>
 
     <script src="src/visualizer.js"></script>
 </body>
 </html>
-
